@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/idoxcloud/Shai-Hulud-Scanner?include_prereleases)](https://github.com/idoxcloud/Shai-Hulud-Scanner/releases)
 [![License](https://img.shields.io/github/license/idoxcloud/Shai-Hulud-Scanner)](LICENSE)
 
-> 📋 **Internal Documentation**: This tool is based on the [iDox Shai-Hulud Response Plan](https://idoxsoftware.sharepoint.com/:w:/s/dev/IQAby2aS9UHOSbIQazIgPgEVAQs97jfjvsycnXiIV6KpQWM?e=8m8cpM) (requires iDox SharePoint access)
+> 📋 **Internal Documentation**: This tool is based on the [Idox Shai-Hulud Response Plan](https://idoxsoftware.sharepoint.com/:w:/s/dev/IQAby2aS9UHOSbIQazIgPgEVAQs97jfjvsycnXiIV6KpQWM?e=8m8cpM) (requires iDox SharePoint access)
 
 ## Features
 

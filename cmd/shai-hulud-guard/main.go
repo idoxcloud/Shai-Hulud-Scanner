@@ -5,13 +5,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const (
 Version  = "1.0.0"
 NexusURL = "https://infra.gla.eim.idoxgroup.local/nexus/repository/npm-public"
+ReportsDir = "/var/log/shai-hulud" // Directory for storing scan reports
 )
 
 func customUsage() {
@@ -22,6 +25,7 @@ func customUsage() {
 	fmt.Fprintf(os.Stderr, "  -install              Install Shai-Hulud protection (blocks npm public registry)\n")
 	fmt.Fprintf(os.Stderr, "  -uninstall            Uninstall protection and restore original configuration\n")
 	fmt.Fprintf(os.Stderr, "  -status               Check protection status\n")
+	fmt.Fprintf(os.Stderr, "  -report               Generate comprehensive system security report (scan + status)\n")
 	fmt.Fprintf(os.Stderr, "  -scan                 Scan for Shai-Hulud indicators\n")
 	fmt.Fprintf(os.Stderr, "  -scan-s3              Scan S3 bucket for Shai-Hulud indicators\n")
 	fmt.Fprintf(os.Stderr, "  -version              Show version information\n")
@@ -80,6 +84,7 @@ func main() {
 		scan       = flag.Bool("scan", false, "Scan for Shai-Hulud indicators (uses embedded scanner script)")
 		scanS3     = flag.Bool("scan-s3", false, "Scan S3 bucket for Shai-Hulud indicators (requires mc and jq)")
 		status     = flag.Bool("status", false, "Check protection status")
+		report     = flag.Bool("report", false, "Generate comprehensive report (scan + status)")
 		version    = flag.Bool("version", false, "Show version")
 		confirm    = flag.Bool("yes", false, "Skip dry-run and apply changes immediately (default: false)")
 		backupInfo = flag.Bool("backup-info", false, "Show location of hosts file backup")
@@ -208,7 +213,23 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Check for root/admin privileges (except for version, backup-info, and scan)
+	// Handle report command - generates comprehensive report
+	if *report {
+		if err := generateReport(*scanMode, *scanRoot); err != nil {
+			fmt.Fprintf(os.Stderr, "Report generation failed: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// Handle status command - doesn't require admin privileges
+	if *status {
+		service := NewProtectionService(false)
+		showStatus(service)
+		os.Exit(0)
+	}
+
+	// Check for root/admin privileges (except for version, backup-info, scan, report, and status)
 	if !isRunningAsAdmin() {
 		fmt.Fprintln(os.Stderr, "ERROR: This tool must be run with sudo/administrator privileges")
 		fmt.Fprintln(os.Stderr, "Please run: sudo shai-hulud-guard [options]")
@@ -267,10 +288,6 @@ func main() {
 		}
 		fmt.Println("\n✓ Shai-Hulud protection removed")
 
-	case *status:
-		service := NewProtectionService(false)
-		showStatus(service)
-
 	default:
 		customUsage()
 	}
@@ -307,6 +324,40 @@ func showStatus(service *ProtectionService) {
 	if _, err := os.Stat(backupPath); err == nil {
 		fmt.Printf("\nBackup location: %s\n", backupPath)
 	}
+	
+	// Check for recent scan reports
+	reportDirs := []string{ReportsDir, filepath.Join(os.TempDir(), "shai-hulud-reports")}
+	
+	for _, reportsDir := range reportDirs {
+		if entries, err := os.ReadDir(reportsDir); err == nil && len(entries) > 0 {
+			// Find the most recent report
+			var newestReport string
+			var newestTime time.Time
+			
+			for _, entry := range entries {
+				if entry.IsDir() {
+					continue
+				}
+				
+				// Check if it's a report file
+				if strings.HasPrefix(entry.Name(), "shai-hulud-report-") || 
+				   strings.HasPrefix(entry.Name(), "ShaiHulud-Scan-Report-") {
+					info, err := entry.Info()
+					if err == nil && info.ModTime().After(newestTime) {
+						newestTime = info.ModTime()
+						newestReport = filepath.Join(reportsDir, entry.Name())
+					}
+				}
+			}
+			
+			if newestReport != "" {
+				fmt.Printf("\nRecent scan reports:\n")
+				fmt.Printf("  Latest: %s\n", newestReport)
+				fmt.Printf("  Time:   %s\n", newestTime.Format("2006-01-02 15:04:05"))
+				return // Only show the most recent report from any directory
+			}
+		}
+	}
 }
 
 func printStatus(label string, status bool) {
@@ -329,4 +380,94 @@ func promptConfirm(message string) bool {
 	
 	response = strings.TrimSpace(strings.ToLower(response))
 	return response == "y" || response == "yes"
+}
+
+// generateReport creates a comprehensive security report including scan results and guard status
+func generateReport(scanMode, scanRoot string) error {
+	fmt.Println("═══════════════════════════════════════════")
+	fmt.Println("    Shai-Hulud Security Report")
+	fmt.Println("═══════════════════════════════════════════")
+	fmt.Println()
+	
+	// Try to use system reports directory, fall back to temp if no permission
+	reportsDir := ReportsDir
+	if err := os.MkdirAll(reportsDir, 0755); err != nil {
+		// Fall back to temp directory if we can't write to /var/log/shai-hulud
+		reportsDir = filepath.Join(os.TempDir(), "shai-hulud-reports")
+		if err := os.MkdirAll(reportsDir, 0755); err != nil {
+			return fmt.Errorf("failed to create reports directory: %w", err)
+		}
+		fmt.Printf("Note: Using temporary reports directory: %s\n", reportsDir)
+		fmt.Println("      (Run with sudo to use system directory: /var/log/shai-hulud)")
+		fmt.Println()
+	}
+	
+	// Generate timestamped report filename
+	timestamp := time.Now().Format("20060102-150405")
+	reportPath := filepath.Join(reportsDir, fmt.Sprintf("shai-hulud-report-%s-%s.txt", scanMode, timestamp))
+	
+	fmt.Printf("Running %s scan...\n", scanMode)
+	fmt.Printf("Report will be saved to: %s\n\n", reportPath)
+	
+	// Build scan arguments
+	scanArgs := []string{"-m", scanMode, "-o", reportPath}
+	if scanRoot != "" {
+		scanArgs = append(scanArgs, "-r", scanRoot)
+	}
+	
+	// Run the scanner
+	if err := runScanner(scanArgs); err != nil {
+		return fmt.Errorf("scan failed: %w", err)
+	}
+	
+	fmt.Println()
+	fmt.Println("═══════════════════════════════════════════")
+	fmt.Println("    Protection Status")
+	fmt.Println("═══════════════════════════════════════════")
+	fmt.Println()
+	
+	// Show guard status
+	service := NewProtectionService(false)
+	blocked, configured, vpnConnected := service.Status()
+	
+	printStatus("npm public registry blocked", blocked)
+	printStatus("npm configured for Nexus", configured)
+	printStatus("VPN connectivity", vpnConnected)
+	
+	fmt.Println()
+	if blocked && configured {
+		fmt.Println("✓ Protection is ACTIVE")
+	} else {
+		fmt.Println("✗ Protection is NOT active")
+		if !blocked || !configured {
+			fmt.Println("  Run 'sudo shai-hulud-guard -install' to enable protection")
+		}
+	}
+	
+	// Show backup info
+	backupPath := service.HostsManager.GetBackupPath()
+	if _, err := os.Stat(backupPath); err == nil {
+		fmt.Printf("\nBackup location: %s\n", backupPath)
+	}
+	
+	fmt.Println()
+	fmt.Println("═══════════════════════════════════════════")
+	fmt.Println("    Scan Results Summary")
+	fmt.Println("═══════════════════════════════════════════")
+	fmt.Println()
+	
+	// Read and display the scan report
+	reportContent, err := os.ReadFile(reportPath)
+	if err != nil {
+		return fmt.Errorf("failed to read scan report: %w", err)
+	}
+	
+	fmt.Println(string(reportContent))
+	
+	fmt.Println()
+	fmt.Println("═══════════════════════════════════════════")
+	fmt.Printf("Full report saved to: %s\n", reportPath)
+	fmt.Println("═══════════════════════════════════════════")
+	
+	return nil
 }

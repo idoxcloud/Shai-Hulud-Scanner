@@ -244,9 +244,6 @@ while true; do
 			bucket=$2
 			shift
 			;;
-		-b)
-			rm -rf "${PROJECT_ROOT}/compromised-packages-cache.txt"
-			;;
 		-h)
 			host=$2
 			shift
@@ -354,11 +351,6 @@ if [[ ! "${response}" =~ ^(yes|y)$ ]]; then
 	exit 1
 fi
 
-if [[ ! -f "${PROJECT_ROOT}/compromised-packages-cache.txt" ]]; then
-	log 3 "Caching compromise information"
-	"${PROJECT_ROOT}"/scan-engine.sh -c
-fi
-
 log 5 "Adding '${alias}' alias"
 mc alias set "${alias}" "${protocol}://${host}:${port}" "${accessKey}" "${secretKey}" > /dev/null
 
@@ -368,7 +360,7 @@ mkdir -p "${workArea}"
 getS3Folder "${path}"
 
 log 3 "Running scan...."
-"${PROJECT_ROOT}"/Check-ShaiHulud-Dynamic.sh -r "${workArea}" -m "full" -o "${PROJECT_ROOT}/ShaiHulud-S3-Scan-Report.txt" -B -F
+"${PROJECT_ROOT}"/scripts/Check-ShaiHulud-Dynamic.sh -r "${workArea}" -m "full" -o "${PROJECT_ROOT}/ShaiHulud-S3-Scan-Report.txt" -B -F
 
 log 5 "Removing '${alias}' alias"
 mc alias remove "${alias}" > /dev/null

@@ -1,2 +1,14 @@
-/compromised-packages-cache.txt
-/ShaiHulud-S3-Scan-Report.txt
+# Scan reports and cache
+/*Scan-Report*.txt
+.scan-cache
+
+# Build artifacts
+dist/
+
+# Go build artifacts
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out

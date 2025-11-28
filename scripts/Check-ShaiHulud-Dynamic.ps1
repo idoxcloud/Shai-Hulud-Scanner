@@ -204,11 +204,14 @@ $PackageFeedUrls = @(
     # Add other feeds here as they become available.
 )
 
-# Local cache snapshot for compromised package list (used if feeds are unreachable)
-$CompromisedPackageCacheFile = if ($PSScriptRoot) {
-    Join-Path $PSScriptRoot "compromised-packages-cache.txt"
-} else {
-    ".\compromised-packages-cache.txt"
+# Local cache directory and settings
+$CacheDir = Join-Path $env:TEMP "shai-hulud-scanner-cache"
+$CompromisedPackageCacheFile = Join-Path $CacheDir "compromised-packages-cache.txt"
+$CacheTTL = 86400  # 24 hours in seconds
+
+# Create cache directory if it doesn't exist
+if (-not (Test-Path $CacheDir)) {
+    New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
 }
 
 # Known Shai-Hulud artefact filenames (workflows / payloads).
@@ -306,6 +309,25 @@ function Get-CompromisedPackageList {
     )
 
     $allPkgs = New-Object System.Collections.Generic.HashSet[string]
+    $cacheValid = $false
+    
+    # Check if cache is valid (less than 24 hours old)
+    if (Test-Path $CacheFile) {
+        $cacheAge = (Get-Date) - (Get-Item $CacheFile).LastWriteTime
+        if ($cacheAge.TotalSeconds -lt $CacheTTL) {
+            Write-Host "[*] Using valid cached compromised package list (less than 24 hours old)" -ForegroundColor Green
+            $cached = Get-Content $CacheFile -ErrorAction SilentlyContinue
+            foreach ($line in $cached) {
+                $clean = ($line.Trim() -split '[,;|\s]')[0]
+                if (![string]::IsNullOrWhiteSpace($clean) -and -not $clean.StartsWith("#")) {
+                    [void]$allPkgs.Add($clean)
+                }
+            }
+            return $allPkgs
+        }
+    }
+    
+    # Cache is stale or doesn't exist, fetch fresh data
     $totalUrls = $Urls.Count
     $currentUrl = 0
 
@@ -336,16 +358,17 @@ function Get-CompromisedPackageList {
     if ($allPkgs.Count -gt 0 -and $CacheFile) {
         try {
             $allPkgs | Sort-Object | Out-File -FilePath $CacheFile -Encoding UTF8 -Force
+            Write-Host "[*] Cached compromised package list (valid for 24 hours)" -ForegroundColor Green
         }
         catch {
             Write-Host "[!] Failed to write cache file $CacheFile : $($_.Exception.Message)" -ForegroundColor Yellow
         }
     }
 
-    # Fallback to cached snapshot if feeds failed
+    # Fallback to stale cache if feeds failed
     if ($allPkgs.Count -eq 0 -and $CacheFile -and (Test-Path $CacheFile)) {
         try {
-            Write-Host "[*] Loading compromised package snapshot from cache: $CacheFile" -ForegroundColor Yellow
+            Write-Host "[*] Loading stale compromised package snapshot from cache: $CacheFile" -ForegroundColor Yellow
             $cached = Get-Content $CacheFile -ErrorAction Stop
             foreach ($line in $cached) {
                 $clean = ($line.Trim() -split '[,;|\s]')[0]

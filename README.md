@@ -64,11 +64,58 @@ git clone https://github.com/your-repo/shai-hulud-scanner.git
 cd shai-hulud-scanner
 ```
 
-Or download the individual script for your platform:
-- **Windows**: `Check-ShaiHulud-Dynamic.ps1`
-- **Unix/Linux/macOS**: `Check-ShaiHulud-Dynamic.sh`
+### Option 1: Use the Go Binary (Recommended)
+
+Build the cross-platform binary that includes embedded scanner scripts:
+
+```bash
+# Build the binary
+make build
+
+# Or manually:
+go build -o shai-hulud-guard ./cmd/shai-hulud-guard
+```
+
+The binary includes all scanner scripts embedded, so you only need to distribute one file!
+
+### Option 2: Use Scripts Directly
+
+Or download the individual script for your platform from the `scripts/` directory:
+- **Windows**: `scripts/Check-ShaiHulud-Dynamic.ps1`
+- **Unix/Linux**: `scripts/Check-ShaiHulud-Dynamic.sh`
+- **macOS**: `scripts/Check-ShaiHulud-Dynamic-macOS.sh`
 
 ## Usage
+
+### Go Binary (Cross-Platform)
+
+The `shai-hulud-guard` binary includes both protection features and the scanner:
+
+```bash
+# Scan with embedded scanner (no admin required)
+./shai-hulud-guard --scan                    # Quick scan of $HOME
+./shai-hulud-guard --scan -- -m full         # Full comprehensive scan
+./shai-hulud-guard --scan -- -r /path/to/dir # Scan specific directory
+./shai-hulud-guard --scan -- -h              # Show scanner options
+
+# Protection features (require sudo/admin)
+sudo ./shai-hulud-guard --install            # Install npm protection
+sudo ./shai-hulud-guard --status             # Check protection status
+sudo ./shai-hulud-guard --uninstall          # Remove protection
+```
+
+**Note:** Use `--` to separate the binary's flags from scanner script arguments.
+
+#### Scanner Arguments (passed after `--`)
+
+All arguments after `--` are passed to the embedded scanner script:
+
+| Argument | Description |
+|----------|-------------|
+| `-r, --roots "path"` | Comma-separated directories to scan |
+| `-m, --mode quick\|full` | Scan mode (default: quick) |
+| `-o, --report FILE` | Report output path |
+| `-h, --help` | Show scanner help |
 
 ### PowerShell (Windows)
 
@@ -77,16 +124,16 @@ Or download the individual script for your platform:
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 # Quick scan (default) - fast, covers common IOCs
-.\Check-ShaiHulud-Dynamic.ps1 -RootPaths "C:\Projects"
+.\scripts\Check-ShaiHulud-Dynamic.ps1 -RootPaths "C:\Projects"
 
 # Full scan - comprehensive, takes longer
-.\Check-ShaiHulud-Dynamic.ps1 -RootPaths "C:\Projects" -ScanMode Full
+.\scripts\Check-ShaiHulud-Dynamic.ps1 -RootPaths "C:\Projects" -ScanMode Full
 
 # Scan multiple directories
-.\Check-ShaiHulud-Dynamic.ps1 -RootPaths "C:\Projects", "D:\Work" -ScanMode Full
+.\scripts\Check-ShaiHulud-Dynamic.ps1 -RootPaths "C:\Projects", "D:\Work" -ScanMode Full
 
 # Custom report output path
-.\Check-ShaiHulud-Dynamic.ps1 -RootPaths "C:\Projects" -ReportPath "C:\Reports\scan.txt"
+.\scripts\Check-ShaiHulud-Dynamic.ps1 -RootPaths "C:\Projects" -ReportPath "C:\Reports\scan.txt"
 ```
 
 #### PowerShell Parameters
@@ -101,22 +148,22 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ```bash
 # Make the script executable
-chmod +x Check-ShaiHulud-Dynamic-macOS.sh
+chmod +x scripts/Check-ShaiHulud-Dynamic-macOS.sh
 
 # Quick scan (default) - fast, covers common IOCs
-./Check-ShaiHulud-Dynamic-macOS.sh -r ~/projects
+./scripts/Check-ShaiHulud-Dynamic-macOS.sh -r ~/projects
 
 # Full scan - comprehensive, takes longer
-./Check-ShaiHulud-Dynamic-macOS.sh -r ~/projects -m full
+./scripts/Check-ShaiHulud-Dynamic-macOS.sh -r ~/projects -m full
 
 # Scan multiple directories (comma-separated)
-./Check-ShaiHulud-Dynamic-macOS.sh -r ~/projects,~/work -m full
+./scripts/Check-ShaiHulud-Dynamic-macOS.sh -r ~/projects,~/work -m full
 
 # Custom report output path
-./Check-ShaiHulud-Dynamic-macOS.sh -r ~/projects -o ~/reports/scan.txt
+./scripts/Check-ShaiHulud-Dynamic-macOS.sh -r ~/projects -o ~/reports/scan.txt
 
 # Show help
-./Check-ShaiHulud-Dynamic-macOS.sh -h
+./scripts/Check-ShaiHulud-Dynamic-macOS.sh -h
 ```
 
 #### Bash Parameters
@@ -216,9 +263,12 @@ The scanner is optimized for large codebases:
 
 Both scripts support offline operation:
 
-1. On first successful run, the compromised packages list is cached locally to `compromised-packages-cache.txt`
-2. If the IOC feed is unreachable, the scanner falls back to the cached snapshot
-3. File-based IOC checks (hashes, filenames, patterns) work without network access
+1. On first successful run, the compromised packages list is cached to the system temp directory (valid for 24 hours)
+   - **Unix/Linux/macOS**: `${TMPDIR:-/tmp}/shai-hulud-scanner-cache/`
+   - **Windows**: `%TEMP%\shai-hulud-scanner-cache\`
+2. Cache is automatically refreshed every 24 hours when scanner runs
+3. If the IOC feed is unreachable, the scanner falls back to stale cached data with a warning
+4. File-based IOC checks (hashes, filenames, patterns) work without network access
 
 ## Platform Differences
 
@@ -255,7 +305,7 @@ To add new IOCs, update the following sections in the scripts:
 - `$SuspiciousWorkflowPatterns` - GitHub Actions patterns
 - `$SuspiciousPostinstallPatterns` - npm script patterns
 
-### Bash (`Check-ShaiHulud-Dynamic.sh`)
+### Bash (`scripts/Check-ShaiHulud-Dynamic.sh`)
 - `MALICIOUS_FILES` - known malicious filenames
 - `SUSPICIOUS_BRANCH_PATTERNS` - git branch patterns
 - `MAL_SHA256` / `MAL_SHA1` - file hashes

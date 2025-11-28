@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOTS=("$HOME")
 SCAN_MODE="quick"
-REPORT_PATH="./ShaiHulud-Scan-Report.txt"
+REPORT_PATH=""  # Will be set after parsing arguments
 
 # Wide ASCII Art Banner (for terminals >= 180 chars)
 BANNER_WIDE='
@@ -148,8 +148,20 @@ if [[ "$SCAN_MODE" != "quick" && "$SCAN_MODE" != "full" ]]; then
   exit 1
 fi
 
+# Set default report path with timestamp and scan mode if not specified
+if [[ -z "$REPORT_PATH" ]]; then
+  TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+  REPORT_PATH="./ShaiHulud-Scan-Report-${SCAN_MODE}-${TIMESTAMP}.txt"
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CACHE_FILE="$SCRIPT_DIR/compromised-packages-cache.txt"
+CACHE_DIR="${TMPDIR:-/tmp}/shai-hulud-scanner-cache"
+CACHE_FILE="$CACHE_DIR/compromised-packages-cache.txt"
+CACHE_TTL=86400  # 24 hours in seconds
+CHECKPOINT_FILE="$CACHE_DIR/checkpoint.txt"
+
+# Create cache directory
+mkdir -p "$CACHE_DIR"
 
 PACKAGE_FEED_URLS=(
   "https://raw.githubusercontent.com/Cobenian/shai-hulud-detect/refs/heads/main/compromised-packages.txt"
@@ -218,10 +230,75 @@ check_mal_sha1() {
 
 FINDING_LIST=()
 
+# Cache helper functions
+get_cache_file() {
+  local cache_name="$1"
+  echo "$CACHE_DIR/${cache_name}.cache"
+}
+
+is_cache_valid() {
+  local cache_file="$1"
+  [[ ! -f "$cache_file" ]] && return 1
+  local now=$(date +%s)
+  local mtime=$(stat -f %m "$cache_file" 2>/dev/null || echo 0)
+  local age=$(( now - mtime ))
+  [[ $age -lt $CACHE_TTL ]]
+}
+
+save_to_cache() {
+  local cache_name="$1"
+  local cache_file="$(get_cache_file "$cache_name")"
+  cat > "$cache_file"
+}
+
+load_from_cache() {
+  local cache_name="$1"
+  local cache_file="$(get_cache_file "$cache_name")"
+  if is_cache_valid "$cache_file"; then
+    echo "[CACHE] Loading cached results for: $cache_name" >&2
+    cat "$cache_file"
+    return 0
+  fi
+  return 1
+}
+
+save_checkpoint() {
+  local step="$1"
+  echo "$step|$(date +%s)" > "$CHECKPOINT_FILE"
+}
+
+get_last_checkpoint() {
+  [[ -f "$CHECKPOINT_FILE" ]] && cat "$CHECKPOINT_FILE" | cut -d'|' -f1 || echo ""
+}
+
+clear_checkpoint() {
+  rm -f "$CHECKPOINT_FILE"
+}
+
+should_skip_step() {
+  local step="$1"
+  local last_checkpoint="$(get_last_checkpoint)"
+  [[ -n "$last_checkpoint" ]] || return 1
+  
+  # Define step order
+  local steps=("packages" "node_modules_find" "node_modules_scan" "npm_cache" "malicious_files" "git" "workflows" "credentials" "runners" "hooks" "hashes" "migration" "trufflehog" "env_patterns")
+  
+  local current_idx=-1
+  local checkpoint_idx=-1
+  for i in "${!steps[@]}"; do
+    [[ "${steps[$i]}" == "$step" ]] && current_idx=$i
+    [[ "${steps[$i]}" == "$last_checkpoint" ]] && checkpoint_idx=$i
+  done
+  
+  [[ $current_idx -ge 0 && $checkpoint_idx -ge 0 && $current_idx -le $checkpoint_idx ]]
+}
+
 log_section() { echo; echo "---- $1 ----"; }
 add_finding() {
   local type="$1" indicator="$2" location="$3"
   FINDING_LIST+=("$type|$indicator|$location")
+  # Append to report immediately
+  echo "Type: $type | Indicator: $indicator | Location: $location" >> "$REPORT_PATH"
 }
 
 trim() {
@@ -292,6 +369,27 @@ has_compromised_scope() {
 }
 
 load_compromised_packages() {
+  if should_skip_step "packages"; then
+    echo "[RESUME] Skipping packages load (already completed)"
+    # Restore from cache
+    local pkg_cache="$(get_cache_file "packages")"
+    if [[ -f "$pkg_cache" ]]; then
+      while IFS= read -r line; do
+        local token="$line"
+        if [[ "$token" == @*/* ]]; then
+          local scope="${token%%/*}"
+          local name="${token#*/}"
+          COMP_SCOPED+=("$scope|$name")
+          COMP_SCOPES+=("$scope")
+        else
+          COMP_UNSCOPED+=("$token")
+        fi
+      done < "$pkg_cache"
+      echo "[*] Restored $(( ${#COMP_UNSCOPED[@]} + ${#COMP_SCOPED[@]} )) packages from cache"
+      return
+    fi
+  fi
+  
   local loaded=0
   local tmpfile
   tmpfile="$(mktemp)"
@@ -391,10 +489,20 @@ load_compromised_packages() {
     COMPROMISED_REGEX="(${patterns[*]// /|})"
   fi
   echo "[*] Total unique compromised package identifiers loaded: $(( ${#COMP_UNSCOPED[@]} + ${#COMP_SCOPED[@]} ))"
+  
+  # Save to cache
+  cat "$CACHE_FILE" | save_to_cache "packages"
+  save_checkpoint "packages"
 }
 
 find_node_modules() {
   local mode="$1"; shift
+  
+  # Try cache first
+  if load_from_cache "node_modules_dirs_${mode}"; then
+    return 0
+  fi
+  
   local -a dirs=()
   for root in "$@"; do
     [[ -d "$root" ]] || { echo "[!] Root path not found: $root" >&2; continue; }
@@ -407,13 +515,19 @@ find_node_modules() {
       while IFS= read -r -d '' d; do dirs+=("$d"); done < <(find "$root" -type d -name node_modules -print0 2>/dev/null)
     fi
   done
-  printf '%s\n' "${dirs[@]}" | sort -u
+  printf '%s\n' "${dirs[@]}" | sort -u | tee >(save_to_cache "node_modules_dirs_${mode}")
 }
 
 scan_node_modules() {
   local nm_dirs=("$@")
+  local total=${#nm_dirs[@]}
+  local current=0
+  
   for nm in "${nm_dirs[@]}"; do
+    ((current++))
     [[ -d "$nm" ]] || continue
+    echo -ne "\r[*] Scanning node_modules: $current/$total..." >&2
+    
     while IFS= read -r -d '' child; do
       local name
       name="$(basename "$child")"
@@ -423,18 +537,22 @@ scan_node_modules() {
           local pkgname
           pkgname="$(basename "$pkgdir")"
           if is_compromised_scoped "$name" "$pkgname"; then
+            echo -ne "\r" >&2
             add_finding "node_modules" "$name/$pkgname" "$pkgdir"
             echo "    [!] FOUND: $name/$pkgname at $nm"
           fi
         done < <(find "$child" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
       else
         if is_compromised_unscoped "$name"; then
+          echo -ne "\r" >&2
           add_finding "node_modules" "$name" "$child"
           echo "    [!] FOUND: $name at $nm"
         fi
       fi
     done < <(find "$nm" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
   done
+  echo -ne "\r" >&2
+  echo "[*] Scanned $total node_modules directories"
 }
 
 scan_npm_cache() {
@@ -526,10 +644,16 @@ scan_git() {
 
 scan_workflows() {
   local roots=("$@")
+  local tmpfile="$(mktemp)" || { echo "[ERROR] Failed to create temp file" >&2; return 1; }
+  local scanned=0
   for root in "${roots[@]}"; do
     [[ -d "$root" ]] || continue
+    find "$root" -type d -path "*/.github/workflows" -print0 2>/dev/null > "$tmpfile" || true
     while IFS= read -r -d '' wfdir; do
+      local tmpfile2="$(mktemp)" || continue
+      find "$wfdir" -maxdepth 1 -type f \( -name "*.yml" -o -name "*.yaml" \) -print0 2>/dev/null > "$tmpfile2" || true
       while IFS= read -r -d '' wf; do
+        ((scanned++))
         local base
         base="$(basename "$wf")"
         if [[ "$base" =~ ^formatter_[0-9]+\.yml$ ]]; then
@@ -544,37 +668,54 @@ scan_workflows() {
             break
           fi
         done
-      done < <(find "$wfdir" -maxdepth 1 -type f \( -name "*.yml" -o -name "*.yaml" \) -print0 2>/dev/null)
-    done < <(find "$root" -type d -path "*/.github/workflows" -print0 2>/dev/null)
+      done < "$tmpfile2"
+      rm -f "$tmpfile2"
+    done < "$tmpfile"
   done
+  rm -f "$tmpfile"
+  echo "[*] Scanned $scanned workflow files"
 }
 
 scan_credentials() {
   local mode="$1"; shift
   local roots=("$@")
+  local tmpfile="$(mktemp)" || { echo "[ERROR] Failed to create temp file" >&2; return 1; }
+  local found=0
   for root in "${roots[@]}"; do
     [[ -d "$root" ]] || continue
     for cred in "${CLOUD_CREDENTIAL_PATHS[@]}"; do
       local path="$root/$cred"
       if [[ -e "$path" ]]; then
         add_finding "credential-file" "$cred" "$path"
+        ((found++))
       fi
     done
     if [[ "$mode" == "full" ]]; then
+      find "$root" -type f -name ".env*" ! -path "*/node_modules/*" -print0 2>/dev/null > "$tmpfile" || true
       while IFS= read -r -d '' envfile; do
         add_finding "credential-file" ".env file" "$envfile"
-      done < <(find "$root" -type f -name ".env*" ! -path "*/node_modules/*" -print0 2>/dev/null)
+        ((found++))
+      done < "$tmpfile"
     else
-      [[ -f "$root/.env" ]] && add_finding "credential-file" ".env file" "$root/.env"
+      if [[ -f "$root/.env" ]]; then
+        add_finding "credential-file" ".env file" "$root/.env"
+        ((found++))
+      fi
     fi
   done
+  rm -f "$tmpfile"
+  echo "[*] Found $found credential files"
 }
 
 scan_runners() {
   local roots=("$@")
+  local tmpfile="$(mktemp)" || { echo "[ERROR] Failed to create temp file" >&2; return 1; }
+  local checked=0
   for root in "${roots[@]}"; do
     [[ -d "$root" ]] || continue
+    find "$root" -type d \( -name "actions-runner" -o -name "_work" -o -name "*runner*" \) -print0 2>/dev/null > "$tmpfile" || true
     while IFS= read -r -d '' dir; do
+      ((checked++))
       local runner="$dir/.runner"
       if [[ -f "$runner" ]]; then
         if grep -q "SHA1HULUD" "$runner" 2>/dev/null; then
@@ -584,22 +725,28 @@ scan_runners() {
           add_finding "runner-installation" "Self-hosted runner installation (verify legitimacy)" "$dir"
         fi
       fi
-    done < <(find "$root" -type d \( -name "actions-runner" -o -name "_work" -o -name "*runner*" \) -print0 2>/dev/null)
+    done < "$tmpfile"
   done
+  rm -f "$tmpfile"
+  echo "[*] Checked $checked runner directories"
 }
 
 scan_hooks() {
   local mode="$1"; shift
   local roots=("$@")
+  local total_checked=0
+  
   for root in "${roots[@]}"; do
     [[ -d "$root" ]] || continue
     if [[ "$mode" == "quick" ]]; then
       local pkg="$root/package.json"
-      [[ -f "$pkg" ]] || continue
-      while IFS='|' read -r hook pat; do
-        [[ -z "$hook" ]] && continue
-        add_finding "postinstall-hook" "Suspicious $hook: $pat" "$pkg"
-      done <<<"$(python3 - "$pkg" "${SUSPICIOUS_HOOK_PATTERNS[@]}" 2>/dev/null <<'PY'
+      if [[ -f "$pkg" ]]; then
+        echo "[*] Checking: $pkg"
+        ((total_checked++))
+        while IFS='|' read -r hook pat; do
+          [[ -z "$hook" ]] && continue
+          add_finding "postinstall-hook" "Suspicious $hook: $pat" "$pkg"
+        done <<<"$(python3 - "$pkg" "${SUSPICIOUS_HOOK_PATTERNS[@]}" 2>/dev/null <<'PY'
 import json, sys
 pkg = sys.argv[1]
 pats = sys.argv[2:]
@@ -618,11 +765,26 @@ for hook in ("postinstall","preinstall","install","prepare"):
             sys.exit(0)
 PY
 )"
+      fi
     else
+      # Count total package.json files first for progress tracking
+      local tmpfile_count="$(mktemp)"
+      find "$root" -type f -name "package.json" ! -path "*/node_modules/*/node_modules/*" -print0 2>/dev/null > "$tmpfile_count" || true
+      local total_files=$(grep -c -z '' < "$tmpfile_count" 2>/dev/null || echo 0)
+      echo "[*] Found $total_files package.json files to scan"
+      
+      local count=0
       while IFS= read -r -d '' pkg; do
+        ((count++))
+        ((total_checked++))
+        if (( count % 10 == 0 )) || [[ $count -eq 1 ]]; then
+          echo -ne "\r[*] Progress: $count/$total_files files checked..." >&2
+        fi
         while IFS='|' read -r hook pat; do
           [[ -z "$hook" ]] && continue
+          echo -ne "\r" >&2
           add_finding "postinstall-hook" "Suspicious $hook: $pat" "$pkg"
+          echo "    [!] FOUND: Suspicious $hook in $(basename "$(dirname "$pkg")")"  
         done <<<"$(python3 - "$pkg" "${SUSPICIOUS_HOOK_PATTERNS[@]}" 2>/dev/null <<'PY'
 import json, sys, pathlib
 pkg = pathlib.Path(sys.argv[1])
@@ -642,22 +804,32 @@ for hook in ("postinstall","preinstall","install","prepare"):
             sys.exit(0)
 PY
 )"
-      done < <(find "$root" -type f -name "package.json" ! -path "*/node_modules/*/node_modules/*" -print0 2>/dev/null)
+      done < "$tmpfile_count"
+      rm -f "$tmpfile_count"
+      echo -ne "\r" >&2
     fi
   done
+  echo "[*] Checked $total_checked package.json files for suspicious hooks"
 }
 
 scan_hashes() {
   local mode="$1"; shift
   local roots=("$@")
+  local scanned=0
+  
   for root in "${roots[@]}"; do
     [[ -d "$root" ]] || continue
     if [[ "$mode" == "quick" ]]; then
       while IFS= read -r -d '' file; do
+        ((scanned++))
+        if (( scanned % 50 == 0 )); then
+          echo -ne "\r[*] Hashed $scanned files..." >&2
+        fi
         local sha256
         sha256=$(shasum -a 256 "$file" 2>/dev/null | awk '{print $1}')
         local desc
         if desc=$(check_mal_sha256 "$sha256"); then
+          echo -ne "\r" >&2
           add_finding "malware-hash" "SHA256 match: $desc" "$file"
           echo "    [!!!] MALWARE DETECTED: $file"
           continue
@@ -665,16 +837,22 @@ scan_hashes() {
         local sha1
         sha1=$(shasum -a 1 "$file" 2>/dev/null | awk '{print $1}')
         if desc=$(check_mal_sha1 "$sha1"); then
+          echo -ne "\r" >&2
           add_finding "malware-hash" "SHA1 match: $desc" "$file"
           echo "    [!!!] MALWARE DETECTED: $file"
         fi
       done < <(find "$root" \( -path "*/node_modules/*/node_modules/*" -prune \) -o -type f \( $(printf -- '-name %q -o ' "${SUSPICIOUS_NAMES[@]}") -false \) -print0 2>/dev/null)
     else
       while IFS= read -r -d '' file; do
+        ((scanned++))
+        if (( scanned % 50 == 0 )); then
+          echo -ne "\r[*] Hashed $scanned files..." >&2
+        fi
         local sha256
         sha256=$(shasum -a 256 "$file" 2>/dev/null | awk '{print $1}')
         local desc
         if desc=$(check_mal_sha256 "$sha256"); then
+          echo -ne "\r" >&2
           add_finding "malware-hash" "SHA256 match: $desc" "$file"
           echo "    [!!!] MALWARE DETECTED: $file"
           continue
@@ -682,30 +860,40 @@ scan_hashes() {
         local sha1
         sha1=$(shasum -a 1 "$file" 2>/dev/null | awk '{print $1}')
         if desc=$(check_mal_sha1 "$sha1"); then
+          echo -ne "\r" >&2
           add_finding "malware-hash" "SHA1 match: $desc" "$file"
           echo "    [!!!] MALWARE DETECTED: $file"
         fi
       done < <(find "$root" \( -path "*/node_modules/*" -o -name "*.d.ts" \) -prune -false -o -type f \( -name "*.js" -o -name "*.ts" \) -print0 2>/dev/null)
     fi
   done
+  echo -ne "\r" >&2
+  echo "[*] Hashed $scanned files for malware detection"
 }
 
 scan_migration_suffix() {
   local roots=("$@")
+  local tmpfile="$(mktemp)" || { echo "[ERROR] Failed to create temp file" >&2; return 1; }
+  local checked=0
   for root in "${roots[@]}"; do
     [[ -d "$root" ]] || continue
+    find "$root" -type d -name .git -print0 2>/dev/null > "$tmpfile" || true
     while IFS= read -r -d '' gitdir; do
+      ((checked++))
       local repo
       repo="$(dirname "$gitdir")"
       remotes=$(git -C "$repo" remote -v 2>/dev/null || true)
       if echo "$remotes" | grep -qi "\-migration"; then
         add_finding "migration-attack" "Remote URL contains '-migration'" "$repo"
       fi
-    done < <(find "$root" -type d -name .git -print0 2>/dev/null)
+    done < "$tmpfile"
+    find "$root" -type d -name "*-migration" -print0 2>/dev/null > "$tmpfile" || true
     while IFS= read -r -d '' dir; do
       add_finding "migration-attack" "Directory ends with -migration" "$dir"
-    done < <(find "$root" -type d -name "*-migration" -print0 2>/dev/null)
+    done < "$tmpfile"
   done
+  rm -f "$tmpfile"
+  echo "[*] Checked $checked git repositories for migration attacks"
 }
 
 scan_trufflehog() {
@@ -731,24 +919,91 @@ scan_trufflehog() {
 
 scan_env_patterns() {
   local roots=("$@")
-  local env_regex='process\.env|os\.environ|\$env:|AWS_ACCESS_KEY|AWS_SECRET|GITHUB_TOKEN|NPM_TOKEN|GH_TOKEN|AZURE_'
-  local exfil_regex='webhook\.site|bb8ca5f6-4175-45d2-b042-fc9ebb8170b7|exfiltrat|fetch\s*\(|axios\.|http\.request|https\.request'
+  # Known Shai-Hulud IOCs (CRITICAL)
+  local known_iocs='webhook\.site|bb8ca5f6-4175-45d2-b042-fc9ebb8170b7'
+  # Sensitive env vars (HIGH if combined with exfil)
+  local sensitive_env='AWS_ACCESS_KEY|AWS_SECRET|GITHUB_TOKEN|NPM_TOKEN|GH_TOKEN|AZURE_'
+  # Generic env access (LOW if combined with generic exfil)
+  local generic_env='process\.env|os\.environ|\$env:'
+  # Generic exfil patterns
+  local exfil_funcs='fetch\s*\(|axios\.|http\.request|https\.request'
+  local exfil_keywords='exfiltrat'
+  
+  local tmpfile="$(mktemp)" || { echo "[ERROR] Failed to create temp file" >&2; return 1; }
+  local scanned=0
+  local critical_count=0
+  local high_count=0
+  local low_count=0
+  
   for root in "${roots[@]}"; do
     [[ -d "$root" ]] || continue
+    find "$root" \( -path "*/node_modules/*" -o -name "*.d.ts" \) -prune -false -o -type f \( -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.sh" -o -name "*.ps1" \) -print0 2>/dev/null > "$tmpfile" || true
     while IFS= read -r -d '' file; do
+      ((scanned++))
+      if (( scanned % 100 == 0 )); then
+        echo -ne "\r[*] Scanned $scanned files..." >&2
+      fi
       content="$(cat "$file" 2>/dev/null || true)"
       [[ -z "$content" ]] && continue
-      if echo "$content" | grep -Eiq "$env_regex" && echo "$content" | grep -Eiq "$exfil_regex"; then
-        add_finding "env-exfil-pattern" "Env access + exfil pattern" "$file"
-        echo "    [!] SUSPICIOUS env+exfil: $file"
+      
+      # CRITICAL: Known Shai-Hulud IOCs
+      if echo "$content" | grep -Eiq "$known_iocs"; then
+        echo -ne "\r" >&2
+        add_finding "malware-ioc" "CRITICAL: Known Shai-Hulud IOC detected" "$file"
+        echo "    [!!!] CRITICAL: Shai-Hulud IOC found: $file"
+        ((critical_count++))
+        continue
       fi
-    done < <(find "$root" \( -path "*/node_modules/*" -o -name "*.d.ts" \) -prune -false -o -type f \( -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.sh" -o -name "*.ps1" \) -print0 2>/dev/null)
+      
+      # HIGH: Sensitive credentials + exfil patterns
+      if echo "$content" | grep -Eiq "$sensitive_env"; then
+        if echo "$content" | grep -Eiq "$exfil_funcs|$exfil_keywords"; then
+          echo -ne "\r" >&2
+          add_finding "credential-exfil" "HIGH: Sensitive credential access + exfil pattern" "$file"
+          echo "    [!!] HIGH: Credential exfil pattern: $file"
+          ((high_count++))
+          continue
+        fi
+      fi
+      
+      # LOW: Generic env access + generic fetch (not alarming by default, just logged)
+      # This is common in legitimate code, so we don't print warnings
+      if echo "$content" | grep -Eiq "$generic_env" && echo "$content" | grep -Eiq "$exfil_funcs"; then
+        add_finding "env-access-low" "LOW: Generic env access + network call (likely benign)" "$file"
+        ((low_count++))
+      fi
+    done < "$tmpfile"
   done
+  rm -f "$tmpfile"
+  echo -ne "\r" >&2
+  echo "[*] Scanned $scanned code files for suspicious patterns"
+  if [[ $critical_count -gt 0 ]]; then
+    echo "    [!!!] CRITICAL: $critical_count file(s) with known Shai-Hulud IOCs"
+  fi
+  if [[ $high_count -gt 0 ]]; then
+    echo "    [!!] HIGH: $high_count file(s) with credential exfiltration patterns"
+  fi
+  if [[ $low_count -gt 0 ]]; then
+    echo "    [·] LOW: $low_count file(s) with generic env access (logged in report)"
+  fi
 }
 
 main() {
   local start_ts
   start_ts=$(date +%s)
+
+  # Initialize report file immediately
+  {
+    echo "Shai-Hulud Dynamic Detection Report"
+    echo "Timestamp: $(date -u "+%Y-%m-%d %H:%M:%SZ")"
+    echo "Scan Mode: $(echo "$SCAN_MODE" | tr '[:lower:]' '[:upper:]')"
+    echo "Paths Scanned: ${ROOTS[*]}"
+    echo "Status: SCAN IN PROGRESS"
+    echo ""
+    echo "=== FINDINGS ==="
+    echo ""
+  } > "$REPORT_PATH"
+  echo "[*] Report initialized at: $REPORT_PATH"
 
   print_banner
   echo ""
@@ -758,6 +1013,15 @@ main() {
   echo "[*] Scan Mode: $(echo "$SCAN_MODE" | tr '[:lower:]' '[:upper:]')"
   echo ""
 
+  # Check for resume
+  local last_checkpoint="$(get_last_checkpoint)"
+  if [[ -n "$last_checkpoint" ]]; then
+    echo ""
+    echo "[RESUME] Detected previous incomplete scan, resuming from checkpoint: $last_checkpoint"
+    echo "[RESUME] Cache TTL: ${CACHE_TTL}s (5 minutes)"
+    echo ""
+  fi
+
   log_section "Loading compromised package lists"
   load_compromised_packages
   if [[ ${#COMP_UNSCOPED[@]} -eq 0 && ${#COMP_SCOPED[@]} -eq 0 ]]; then
@@ -765,10 +1029,19 @@ main() {
   fi
 
   log_section "Finding node_modules directories"
-  NM_DIRS=()
-  while IFS= read -r line; do
-    NM_DIRS+=("$line")
-  done < <(find_node_modules "$SCAN_MODE" "${ROOTS[@]}")
+  if should_skip_step "node_modules_find"; then
+    echo "[RESUME] Loading cached node_modules directories"
+    NM_DIRS=()
+    while IFS= read -r line; do
+      NM_DIRS+=("$line")
+    done < "$(get_cache_file "node_modules_dirs_${SCAN_MODE}")"
+  else
+    NM_DIRS=()
+    while IFS= read -r line; do
+      NM_DIRS+=("$line")
+    done < <(find_node_modules "$SCAN_MODE" "${ROOTS[@]}")
+    save_checkpoint "node_modules_find"
+  fi
   echo "[*] Found ${#NM_DIRS[@]} node_modules directories."
 
   local npm_cache=""
@@ -780,61 +1053,121 @@ main() {
   fi
 
   log_section "Scanning for malicious packages in node_modules"
-  if [[ ${#NM_DIRS[@]} -gt 0 && ( ${#COMP_UNSCOPED[@]} -gt 0 || ${#COMP_SCOPED[@]} -gt 0 ) ]]; then
-    scan_node_modules "${NM_DIRS[@]}"
+  if ! should_skip_step "node_modules_scan"; then
+    if [[ ${#NM_DIRS[@]} -gt 0 && ( ${#COMP_UNSCOPED[@]} -gt 0 || ${#COMP_SCOPED[@]} -gt 0 ) ]]; then
+      scan_node_modules "${NM_DIRS[@]}"
+    else
+      echo "[-] Skipping node_modules package scan (no packages or dirs)."
+    fi
+    save_checkpoint "node_modules_scan"
   else
-    echo "[-] Skipping node_modules package scan (no packages or dirs)."
+    echo "[RESUME] Skipping node_modules scan (already completed)"
   fi
 
   if [[ "$SCAN_MODE" == "full" ]]; then
     log_section "Scanning npm cache for compromised packages"
-    if [[ -n "$npm_cache" ]]; then
-      scan_npm_cache "$npm_cache"
+    if ! should_skip_step "npm_cache"; then
+      if [[ -n "$npm_cache" ]]; then
+        scan_npm_cache "$npm_cache"
+      else
+        echo "[-] Skipping npm cache scan (no cache path)."
+      fi
+      save_checkpoint "npm_cache"
     else
-      echo "[-] Skipping npm cache scan (no cache path)."
+      echo "[RESUME] Skipping npm cache scan (already completed)"
     fi
   else
     echo "[Quick] Skipping npm cache scan (use --mode full)"
   fi
 
   log_section "Scanning for known Shai-Hulud artefact files"
-  scan_malicious_files "$SCAN_MODE" "${ROOTS[@]}"
+  if ! should_skip_step "malicious_files"; then
+    scan_malicious_files "$SCAN_MODE" "${ROOTS[@]}"
+    save_checkpoint "malicious_files"
+  else
+    echo "[RESUME] Skipping malicious files scan (already completed)"
+  fi
 
   log_section "Scanning for suspicious git branches and remotes"
-  scan_git "$SCAN_MODE" "${ROOTS[@]}"
+  if ! should_skip_step "git"; then
+    scan_git "$SCAN_MODE" "${ROOTS[@]}"
+    save_checkpoint "git"
+  else
+    echo "[RESUME] Skipping git scan (already completed)"
+  fi
 
   log_section "Scanning GitHub Actions workflows"
-  scan_workflows "${ROOTS[@]}"
+  if ! should_skip_step "workflows"; then
+    scan_workflows "${ROOTS[@]}"
+    save_checkpoint "workflows"
+  else
+    echo "[RESUME] Skipping workflows scan (already completed)"
+  fi
 
   log_section "Checking cloud credential files"
-  scan_credentials "$SCAN_MODE" "${ROOTS[@]}"
+  if ! should_skip_step "credentials"; then
+    scan_credentials "$SCAN_MODE" "${ROOTS[@]}"
+    save_checkpoint "credentials"
+  else
+    echo "[RESUME] Skipping credentials check (already completed)"
+  fi
 
   if [[ "$SCAN_MODE" == "full" ]]; then
     log_section "Checking for self-hosted runners"
-    scan_runners "${ROOTS[@]}"
+    if ! should_skip_step "runners"; then
+      scan_runners "${ROOTS[@]}"
+      save_checkpoint "runners"
+    else
+      echo "[RESUME] Skipping runners check (already completed)"
+    fi
   else
     echo "[Quick] Skipping self-hosted runner scan (use --mode full)"
   fi
 
   log_section "Scanning postinstall hooks"
-  scan_hooks "$SCAN_MODE" "${ROOTS[@]}"
+  if ! should_skip_step "hooks"; then
+    scan_hooks "$SCAN_MODE" "${ROOTS[@]}"
+    save_checkpoint "hooks"
+  else
+    echo "[RESUME] Skipping hooks scan (already completed)"
+  fi
 
   log_section "Hash-based malware detection"
-  scan_hashes "$SCAN_MODE" "${ROOTS[@]}"
+  if ! should_skip_step "hashes"; then
+    scan_hashes "$SCAN_MODE" "${ROOTS[@]}"
+    save_checkpoint "hashes"
+  else
+    echo "[RESUME] Skipping hash detection (already completed)"
+  fi
 
   if [[ "$SCAN_MODE" == "full" ]]; then
     log_section "Checking for migration suffix attack"
-    scan_migration_suffix "${ROOTS[@]}"
+    if ! should_skip_step "migration"; then
+      scan_migration_suffix "${ROOTS[@]}"
+      save_checkpoint "migration"
+    else
+      echo "[RESUME] Skipping migration check (already completed)"
+    fi
   else
     echo "[Quick] Skipping migration suffix scan (use --mode full)"
   fi
 
   log_section "Checking for TruffleHog installation"
-  scan_trufflehog "$SCAN_MODE" "${ROOTS[@]}"
+  if ! should_skip_step "trufflehog"; then
+    scan_trufflehog "$SCAN_MODE" "${ROOTS[@]}"
+    save_checkpoint "trufflehog"
+  else
+    echo "[RESUME] Skipping TruffleHog check (already completed)"
+  fi
 
   if [[ "$SCAN_MODE" == "full" ]]; then
     log_section "Scanning for suspicious env+exfil patterns"
-    scan_env_patterns "${ROOTS[@]}"
+    if ! should_skip_step "env_patterns"; then
+      scan_env_patterns "${ROOTS[@]}"
+      save_checkpoint "env_patterns"
+    else
+      echo "[RESUME] Skipping env patterns scan (already completed)"
+    fi
   else
     echo "[Quick] Skipping env+exfil pattern scan (use --mode full)"
   fi
@@ -844,7 +1177,7 @@ main() {
   local duration=$(( end_ts - start_ts ))
 
   log_section "Summary"
-  echo "[*] Scan completed in ${duration}s (${SCAN_MODE^^} mode)"
+  echo "[*] Scan completed in ${duration}s ($(echo "$SCAN_MODE" | tr '[:lower:]' '[:upper:]') mode)"
   if [[ ${#FINDING_LIST[@]} -eq 0 ]]; then
     echo "[OK] No indicators of Shai-Hulud compromise were found in the scanned locations."
   else
@@ -856,31 +1189,86 @@ main() {
   fi
 
   echo ""
-  echo "[*] Writing detailed report to: $REPORT_PATH"
+  echo "[*] Updating final report summary: $REPORT_PATH"
+  # Update report with final summary
   {
-    echo "Shai-Hulud Dynamic Detection Report"
-    echo "Timestamp: $(date -u +"%Y-%m-%d %H:%M:%SZ")"
-    echo "Scan Mode: ${SCAN_MODE^^}"
-    echo "Scan Duration: ${duration}s"
-    echo "Paths Scanned: ${ROOTS[*]}"
     echo ""
+    echo "=== SCAN SUMMARY ==="
+    echo ""
+    echo "Status: COMPLETED SUCCESSFULLY"
+    echo "Scan Duration: ${duration}s"
     echo "Compromised packages loaded: $(( ${#COMP_UNSCOPED[@]} + ${#COMP_SCOPED[@]} ))"
+    echo "Total indicators found: ${#FINDING_LIST[@]}"
     echo ""
     if [[ ${#FINDING_LIST[@]} -eq 0 ]]; then
       echo "No indicators of compromise found in scanned locations."
     else
-      echo "Indicators of compromise detected: ${#FINDING_LIST[@]}"
+      echo "Review findings above for details."
       echo ""
+      echo "=== FINDINGS BY CATEGORY ==="
+      echo ""
+      
+      # Categorize findings
+      local critical_findings=()
+      local high_findings=()
+      local medium_findings=()
+      local low_findings=()
+      
       for f in "${FINDING_LIST[@]}"; do
         IFS='|' read -r t ind loc <<<"$f"
-        echo "Type: $t | Indicator: $ind | Location: $loc"
+        if [[ "$ind" == "CRITICAL:"* ]] || [[ "$t" == "malware-hash" ]] || [[ "$t" == "malware-ioc" ]]; then
+          critical_findings+=("$loc")
+        elif [[ "$ind" == "HIGH:"* ]] || [[ "$t" == "credential-exfil" ]]; then
+          high_findings+=("$loc")
+        elif [[ "$ind" == "LOW:"* ]] || [[ "$t" == "env-access-low" ]]; then
+          low_findings+=("$loc")
+        else
+          medium_findings+=("$loc")
+        fi
       done
+      
+      if [[ ${#critical_findings[@]} -gt 0 ]]; then
+        echo "CRITICAL FINDINGS (${#critical_findings[@]}):"
+        printf '%s\n' "${critical_findings[@]}" | sort -u
+        echo ""
+      fi
+      
+      if [[ ${#high_findings[@]} -gt 0 ]]; then
+        echo "HIGH SEVERITY FINDINGS (${#high_findings[@]}):"
+        printf '%s\n' "${high_findings[@]}" | sort -u
+        echo ""
+      fi
+      
+      if [[ ${#medium_findings[@]} -gt 0 ]]; then
+        echo "MEDIUM/SUSPICIOUS FINDINGS (${#medium_findings[@]}):"
+        printf '%s\n' "${medium_findings[@]}" | sort -u
+        echo ""
+      fi
+      
+      if [[ ${#low_findings[@]} -gt 0 ]]; then
+        echo "LOW SEVERITY / INFORMATIONAL (${#low_findings[@]}):"
+        printf '%s\n' "${low_findings[@]}" | sort -u
+        echo ""
+      fi
     fi
-  } >"$REPORT_PATH"
-  echo "[*] Report written successfully."
+  } >> "$REPORT_PATH"
+  echo "[*] Report finalized successfully."
+  
+  # Clear checkpoint on successful completion
+  clear_checkpoint
+  echo "[*] Checkpoint cleared - scan completed successfully"
+  
   echo ""
   echo "============================================"
-  echo " Scan complete - review the report carefully"
+  echo " ✓ SCAN COMPLETED SUCCESSFULLY"
+  echo "============================================"
+  if [[ ${#FINDING_LIST[@]} -eq 0 ]]; then
+    echo -e "\033[32m[✓] No threats detected - system appears clean\033[0m"
+  else
+    echo -e "\033[31m[!] ${#FINDING_LIST[@]} potential indicators found - review report\033[0m"
+  fi
+  echo "[*] Full report available at: $REPORT_PATH"
+  echo "[*] Cache directory: $CACHE_DIR (TTL: ${CACHE_TTL}s)"
   echo "============================================"
   echo ""
 }

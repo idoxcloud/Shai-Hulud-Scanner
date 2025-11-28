@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Track if we've encountered an error - stop checkpointing after first error
+SCAN_ERROR=0
+
+# Trap errors and set error flag
+trap 'SCAN_ERROR=1' ERR
+
 ROOTS=("$HOME")
 SCAN_MODE="quick"
 REPORT_PATH="/tmp/ShaiHulud-Scan-Report-$(date +%Y%m%d-%H%M%S).txt"
@@ -314,7 +320,11 @@ find_node_modules() {
       while IFS= read -r -d '' d; do dirs+=("$d"); done < <(find "$root" -type d -name node_modules -print0 2>/dev/null)
     fi
   done
-  printf '%s\n' "${dirs[@]}" | sort -u
+  
+  # Only output if we found directories
+  if [[ ${#dirs[@]} -gt 0 ]]; then
+    printf '%s\n' "${dirs[@]}" | sort -u
+  fi
 }
 
 scan_node_modules() {

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Track if we've encountered an error - stop checkpointing after first error
+SCAN_ERROR=0
+
+# Trap errors and set error flag
+trap 'SCAN_ERROR=1' ERR
+
 ROOTS=("$HOME")
 SCAN_MODE="quick"
 REPORT_PATH=""  # Will be set after parsing arguments
@@ -264,6 +270,11 @@ load_from_cache() {
 
 save_checkpoint() {
   local step="$1"
+  # Don't save checkpoints if we've encountered an error
+  if [[ $SCAN_ERROR -eq 1 ]]; then
+    echo "[WARNING] Not saving checkpoint due to previous error" >&2
+    return 1
+  fi
   echo "$step|$(date +%s)" > "$CHECKPOINT_FILE"
 }
 
@@ -515,7 +526,11 @@ find_node_modules() {
       while IFS= read -r -d '' d; do dirs+=("$d"); done < <(find "$root" -type d -name node_modules -print0 2>/dev/null)
     fi
   done
-  printf '%s\n' "${dirs[@]}" | sort -u | tee >(save_to_cache "node_modules_dirs_${mode}")
+  
+  # Only output if we found directories
+  if [[ ${#dirs[@]} -gt 0 ]]; then
+    printf '%s\n' "${dirs[@]}" | sort -u | tee >(save_to_cache "node_modules_dirs_${mode}")
+  fi
 }
 
 scan_node_modules() {
@@ -1030,21 +1045,27 @@ main() {
 
   log_section "Finding node_modules directories"
   if should_skip_step "node_modules_find"; then
-    echo "[RESUME] Loading cached node_modules directories"
-    NM_DIRS=()
-    while IFS= read -r line; do
-      NM_DIRS+=("$line")
-    done < "$(get_cache_file "node_modules_dirs_${SCAN_MODE}")"
+    local cache_file="$(get_cache_file "node_modules_dirs_${SCAN_MODE}")"
+    if [[ -f "$cache_file" && -s "$cache_file" ]]; then
+      echo "[RESUME] Loading cached node_modules directories"
+      NM_DIRS=()
+      while IFS= read -r line; do
+        NM_DIRS+=("$line")
+      done < "$cache_file"
+    else
+      echo "[WARNING] Cache file missing or empty, re-scanning" >&2
+      NM_DIRS=()
+      while IFS= read -r line; do
+        NM_DIRS+=("$line")
+      done < <(find_node_modules "$SCAN_MODE" "${ROOTS[@]}")
+      save_checkpoint "node_modules_find"
+    fi
   else
     NM_DIRS=()
     while IFS= read -r line; do
       NM_DIRS+=("$line")
     done < <(find_node_modules "$SCAN_MODE" "${ROOTS[@]}")
-    if [[ $? -eq 0 ]]; then
-      save_checkpoint "node_modules_find"
-    else
-      echo "[ERROR] node_modules search failed" >&2
-    fi
+    save_checkpoint "node_modules_find"
   fi
   echo "[*] Found ${#NM_DIRS[@]} node_modules directories."
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -328,12 +329,11 @@ func showStatus(service *ProtectionService) {
 	// Check for recent scan reports
 	reportDirs := []string{ReportsDir, filepath.Join(os.TempDir(), "shai-hulud-reports")}
 	
+	var newestReport string
+	var newestTime time.Time
+	
 	for _, reportsDir := range reportDirs {
 		if entries, err := os.ReadDir(reportsDir); err == nil && len(entries) > 0 {
-			// Find the most recent report
-			var newestReport string
-			var newestTime time.Time
-			
 			for _, entry := range entries {
 				if entry.IsDir() {
 					continue
@@ -349,13 +349,62 @@ func showStatus(service *ProtectionService) {
 					}
 				}
 			}
-			
-			if newestReport != "" {
-				fmt.Printf("\nRecent scan reports:\n")
-				fmt.Printf("  Latest: %s\n", newestReport)
-				fmt.Printf("  Time:   %s\n", newestTime.Format("2006-01-02 15:04:05"))
-				return // Only show the most recent report from any directory
+		}
+	}
+	
+	if newestReport != "" {
+		fmt.Printf("\nRecent scan report:\n")
+		fmt.Printf("  Location: %s\n", newestReport)
+		fmt.Printf("  Time:     %s\n", newestTime.Format("2006-01-02 15:04:05"))
+		
+		// Parse and display scan results
+		if complete, compromised, maliciousCount, err := parseScanReport(newestReport); err == nil {
+			if !complete {
+				fmt.Printf("  Status:   ⚠️  SCAN INCOMPLETE (interrupted or failed)\n")
+			} else if compromised {
+				fmt.Printf("  Status:   🚨 SYSTEM COMPROMISED\n")
+				if maliciousCount > 0 {
+					fmt.Printf("  Threats:  %d indicator(s) of compromise detected\n", maliciousCount)
+				}
+			} else {
+				fmt.Printf("  Status:   ✓ No threats detected\n")
 			}
+		}
+	}
+	
+	// Overall security assessment
+	fmt.Println()
+	fmt.Println("═══════════════════════════")
+	fmt.Println("Overall Security Status:")
+	fmt.Println("═══════════════════════════")
+	
+	if newestReport != "" {
+		complete, compromised, _, err := parseScanReport(newestReport)
+		if err == nil && complete && !compromised && blocked && configured {
+			fmt.Println("✓ SYSTEM SECURE")
+			fmt.Println("  • Protection is active")
+			fmt.Println("  • Recent scan shows no threats")
+		} else {
+			fmt.Println("⚠️  REVIEW REQUIRED")
+			if !blocked || !configured {
+				fmt.Println("  • Protection is not fully active")
+			}
+			if err != nil || !complete {
+				fmt.Println("  • No complete scan available")
+			} else if compromised {
+				fmt.Println("  • Threats detected in scan")
+			}
+		}
+	} else {
+		if blocked && configured {
+			fmt.Println("⚠️  PROTECTION ACTIVE, NO SCAN")
+			fmt.Println("  • Protection is active")
+			fmt.Println("  • No scan report available")
+			fmt.Println("  • Run 'shai-hulud-guard -report' to verify")
+		} else {
+			fmt.Println("✗ SYSTEM AT RISK")
+			fmt.Println("  • Protection is not active")
+			fmt.Println("  • No scan report available")
 		}
 	}
 }
@@ -382,13 +431,56 @@ func promptConfirm(message string) bool {
 	return response == "y" || response == "yes"
 }
 
+// parseScanReport extracts key information from a scan report file
+func parseScanReport(reportPath string) (complete bool, compromised bool, maliciousCount int, err error) {
+	content, err := os.ReadFile(reportPath)
+	if err != nil {
+		return false, false, 0, err
+	}
+	
+	reportText := string(content)
+	
+	// Check if scan completed successfully
+	if strings.Contains(reportText, "Scan completed in") || 
+	   strings.Contains(reportText, "[OK] No indicators of Shai-Hulud compromise") ||
+	   strings.Contains(reportText, "[!!!] POTENTIAL INDICATORS OF COMPROMISE FOUND") {
+		complete = true
+	}
+	
+	// Check for compromise indicators
+	if strings.Contains(reportText, "[!] CRITICAL:") ||
+	   strings.Contains(reportText, "[!!!] POTENTIAL INDICATORS OF COMPROMISE FOUND") ||
+	   strings.Contains(reportText, "Malicious packages detected:") ||
+	   strings.Contains(reportText, "Compromised packages found:") {
+		compromised = true
+	}
+	
+	// Try to extract malicious package count
+	if idx := strings.Index(reportText, "Malicious packages detected:"); idx != -1 {
+		line := reportText[idx:]
+		if endIdx := strings.Index(line, "\n"); endIdx != -1 {
+			line = line[:endIdx]
+			fmt.Sscanf(line, "Malicious packages detected: %d", &maliciousCount)
+		}
+	}
+	
+	// Try to extract indicator count from summary
+	if idx := strings.Index(reportText, "[!!!] POTENTIAL INDICATORS OF COMPROMISE FOUND:"); idx != -1 {
+		line := reportText[idx:]
+		if endIdx := strings.Index(line, "\n"); endIdx != -1 {
+			line = line[:endIdx]
+			var count int
+			if n, _ := fmt.Sscanf(line, "[!!!] POTENTIAL INDICATORS OF COMPROMISE FOUND: %d item(s)", &count); n == 1 {
+				maliciousCount = count
+			}
+		}
+	}
+	
+	return complete, compromised, maliciousCount, nil
+}
+
 // generateReport creates a comprehensive security report including scan results and guard status
 func generateReport(scanMode, scanRoot string) error {
-	fmt.Println("═══════════════════════════════════════════")
-	fmt.Println("    Shai-Hulud Security Report")
-	fmt.Println("═══════════════════════════════════════════")
-	fmt.Println()
-	
 	// Try to use system reports directory, fall back to temp if no permission
 	reportsDir := ReportsDir
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
@@ -397,77 +489,105 @@ func generateReport(scanMode, scanRoot string) error {
 		if err := os.MkdirAll(reportsDir, 0755); err != nil {
 			return fmt.Errorf("failed to create reports directory: %w", err)
 		}
-		fmt.Printf("Note: Using temporary reports directory: %s\n", reportsDir)
-		fmt.Println("      (Run with sudo to use system directory: /var/log/shai-hulud)")
-		fmt.Println()
 	}
 	
 	// Generate timestamped report filename
 	timestamp := time.Now().Format("20060102-150405")
 	reportPath := filepath.Join(reportsDir, fmt.Sprintf("shai-hulud-report-%s-%s.txt", scanMode, timestamp))
 	
-	fmt.Printf("Running %s scan...\n", scanMode)
-	fmt.Printf("Report will be saved to: %s\n\n", reportPath)
+	// Create report file for writing
+	reportFile, err := os.Create(reportPath)
+	if err != nil {
+		return fmt.Errorf("failed to create report file: %w", err)
+	}
+	defer reportFile.Close()
 	
-	// Build scan arguments
-	scanArgs := []string{"-m", scanMode, "-o", reportPath}
+	// Create a multi-writer to write to both console and file
+	multiWriter := io.MultiWriter(os.Stdout, reportFile)
+	
+	// Write header to both console and file
+	fmt.Fprintln(multiWriter, "═══════════════════════════════════════════")
+	fmt.Fprintln(multiWriter, "    Shai-Hulud Security Report")
+	fmt.Fprintln(multiWriter, "═══════════════════════════════════════════")
+	fmt.Fprintln(multiWriter)
+	
+	if reportsDir != ReportsDir {
+		fmt.Fprintln(multiWriter, "Note: Using temporary reports directory")
+		fmt.Fprintf(multiWriter, "      Location: %s\n", reportsDir)
+		fmt.Fprintln(multiWriter, "      (Run with sudo to use system directory: /var/log/shai-hulud)")
+		fmt.Fprintln(multiWriter)
+	}
+	
+	fmt.Fprintf(multiWriter, "Running %s scan...\n", scanMode)
+	fmt.Fprintf(multiWriter, "Timestamp: %s\n\n", time.Now().Format("2006-01-02 15:04:05"))
+	
+	// Build scan arguments - use a temp file for scan output first
+	tempScanFile := reportPath + ".scan.tmp"
+	scanArgs := []string{"-m", scanMode, "-o", tempScanFile}
 	if scanRoot != "" {
 		scanArgs = append(scanArgs, "-r", scanRoot)
 	}
 	
-	// Run the scanner
+	// Run the scanner (output goes to temp file)
 	if err := runScanner(scanArgs); err != nil {
 		return fmt.Errorf("scan failed: %w", err)
 	}
+	defer os.Remove(tempScanFile)
 	
-	fmt.Println()
-	fmt.Println("═══════════════════════════════════════════")
-	fmt.Println("    Protection Status")
-	fmt.Println("═══════════════════════════════════════════")
-	fmt.Println()
+	// Read scan results from temp file
+	scanContent, err := os.ReadFile(tempScanFile)
+	if err != nil {
+		return fmt.Errorf("failed to read scan results: %w", err)
+	}
+	
+	// Write scan results section to both console and file
+	fmt.Fprintln(multiWriter, "═══════════════════════════════════════════")
+	fmt.Fprintln(multiWriter, "    Scan Results")
+	fmt.Fprintln(multiWriter, "═══════════════════════════════════════════")
+	fmt.Fprintln(multiWriter)
+	fmt.Fprint(multiWriter, string(scanContent))
+	
+	// Write protection status section to both console and file
+	fmt.Fprintln(multiWriter)
+	fmt.Fprintln(multiWriter, "═══════════════════════════════════════════")
+	fmt.Fprintln(multiWriter, "    Protection Status")
+	fmt.Fprintln(multiWriter, "═══════════════════════════════════════════")
+	fmt.Fprintln(multiWriter)
 	
 	// Show guard status
 	service := NewProtectionService(false)
 	blocked, configured, vpnConnected := service.Status()
 	
-	printStatus("npm public registry blocked", blocked)
-	printStatus("npm configured for Nexus", configured)
-	printStatus("VPN connectivity", vpnConnected)
+	statusIcon := func(status bool) string {
+		if status { return "✓" }
+		return "✗"
+	}
 	
-	fmt.Println()
+	fmt.Fprintf(multiWriter, "  %s npm public registry blocked\n", statusIcon(blocked))
+	fmt.Fprintf(multiWriter, "  %s npm configured for Nexus\n", statusIcon(configured))
+	fmt.Fprintf(multiWriter, "  %s VPN connectivity\n", statusIcon(vpnConnected))
+	
+	fmt.Fprintln(multiWriter)
 	if blocked && configured {
-		fmt.Println("✓ Protection is ACTIVE")
+		fmt.Fprintln(multiWriter, "✓ Protection is ACTIVE")
 	} else {
-		fmt.Println("✗ Protection is NOT active")
+		fmt.Fprintln(multiWriter, "✗ Protection is NOT active")
 		if !blocked || !configured {
-			fmt.Println("  Run 'sudo shai-hulud-guard -install' to enable protection")
+			fmt.Fprintln(multiWriter, "  Run 'sudo shai-hulud-guard -install' to enable protection")
 		}
 	}
 	
 	// Show backup info
 	backupPath := service.HostsManager.GetBackupPath()
 	if _, err := os.Stat(backupPath); err == nil {
-		fmt.Printf("\nBackup location: %s\n", backupPath)
+		fmt.Fprintf(multiWriter, "\nBackup location: %s\n", backupPath)
 	}
 	
-	fmt.Println()
-	fmt.Println("═══════════════════════════════════════════")
-	fmt.Println("    Scan Results Summary")
-	fmt.Println("═══════════════════════════════════════════")
-	fmt.Println()
-	
-	// Read and display the scan report
-	reportContent, err := os.ReadFile(reportPath)
-	if err != nil {
-		return fmt.Errorf("failed to read scan report: %w", err)
-	}
-	
-	fmt.Println(string(reportContent))
-	
-	fmt.Println()
-	fmt.Println("═══════════════════════════════════════════")
-	fmt.Printf("Full report saved to: %s\n", reportPath)
-	fmt.Println("═══════════════════════════════════════════")
+	// Footer
+	fmt.Fprintln(multiWriter)
+	fmt.Fprintln(multiWriter, "═══════════════════════════════════════════")
+	fmt.Fprintf(multiWriter, "Report saved to: %s\n", reportPath)
+	fmt.Fprintln(multiWriter, "═══════════════════════════════════════════")
 	
 	return nil
 }

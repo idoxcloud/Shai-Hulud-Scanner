@@ -1040,7 +1040,11 @@ main() {
     while IFS= read -r line; do
       NM_DIRS+=("$line")
     done < <(find_node_modules "$SCAN_MODE" "${ROOTS[@]}")
-    save_checkpoint "node_modules_find"
+    if [[ $? -eq 0 ]]; then
+      save_checkpoint "node_modules_find"
+    else
+      echo "[ERROR] node_modules search failed" >&2
+    fi
   fi
   echo "[*] Found ${#NM_DIRS[@]} node_modules directories."
 
@@ -1055,11 +1059,15 @@ main() {
   log_section "Scanning for malicious packages in node_modules"
   if ! should_skip_step "node_modules_scan"; then
     if [[ ${#NM_DIRS[@]} -gt 0 && ( ${#COMP_UNSCOPED[@]} -gt 0 || ${#COMP_SCOPED[@]} -gt 0 ) ]]; then
-      scan_node_modules "${NM_DIRS[@]}"
+      if scan_node_modules "${NM_DIRS[@]}"; then
+        save_checkpoint "node_modules_scan"
+      else
+        echo "[ERROR] node_modules scan failed" >&2
+      fi
     else
       echo "[-] Skipping node_modules package scan (no packages or dirs)."
+      save_checkpoint "node_modules_scan"
     fi
-    save_checkpoint "node_modules_scan"
   else
     echo "[RESUME] Skipping node_modules scan (already completed)"
   fi
@@ -1068,11 +1076,15 @@ main() {
     log_section "Scanning npm cache for compromised packages"
     if ! should_skip_step "npm_cache"; then
       if [[ -n "$npm_cache" ]]; then
-        scan_npm_cache "$npm_cache"
+        if scan_npm_cache "$npm_cache"; then
+          save_checkpoint "npm_cache"
+        else
+          echo "[ERROR] npm cache scan failed" >&2
+        fi
       else
         echo "[-] Skipping npm cache scan (no cache path)."
+        save_checkpoint "npm_cache"
       fi
-      save_checkpoint "npm_cache"
     else
       echo "[RESUME] Skipping npm cache scan (already completed)"
     fi
@@ -1082,32 +1094,44 @@ main() {
 
   log_section "Scanning for known Shai-Hulud artefact files"
   if ! should_skip_step "malicious_files"; then
-    scan_malicious_files "$SCAN_MODE" "${ROOTS[@]}"
-    save_checkpoint "malicious_files"
+    if scan_malicious_files "$SCAN_MODE" "${ROOTS[@]}"; then
+      save_checkpoint "malicious_files"
+    else
+      echo "[ERROR] malicious files scan failed" >&2
+    fi
   else
     echo "[RESUME] Skipping malicious files scan (already completed)"
   fi
 
   log_section "Scanning for suspicious git branches and remotes"
   if ! should_skip_step "git"; then
-    scan_git "$SCAN_MODE" "${ROOTS[@]}"
-    save_checkpoint "git"
+    if scan_git "$SCAN_MODE" "${ROOTS[@]}"; then
+      save_checkpoint "git"
+    else
+      echo "[ERROR] git scan failed" >&2
+    fi
   else
     echo "[RESUME] Skipping git scan (already completed)"
   fi
 
   log_section "Scanning GitHub Actions workflows"
   if ! should_skip_step "workflows"; then
-    scan_workflows "${ROOTS[@]}"
-    save_checkpoint "workflows"
+    if scan_workflows "${ROOTS[@]}"; then
+      save_checkpoint "workflows"
+    else
+      echo "[ERROR] workflows scan failed" >&2
+    fi
   else
     echo "[RESUME] Skipping workflows scan (already completed)"
   fi
 
   log_section "Checking cloud credential files"
   if ! should_skip_step "credentials"; then
-    scan_credentials "$SCAN_MODE" "${ROOTS[@]}"
-    save_checkpoint "credentials"
+    if scan_credentials "$SCAN_MODE" "${ROOTS[@]}"; then
+      save_checkpoint "credentials"
+    else
+      echo "[ERROR] credentials check failed" >&2
+    fi
   else
     echo "[RESUME] Skipping credentials check (already completed)"
   fi
@@ -1115,8 +1139,11 @@ main() {
   if [[ "$SCAN_MODE" == "full" ]]; then
     log_section "Checking for self-hosted runners"
     if ! should_skip_step "runners"; then
-      scan_runners "${ROOTS[@]}"
-      save_checkpoint "runners"
+      if scan_runners "${ROOTS[@]}"; then
+        save_checkpoint "runners"
+      else
+        echo "[ERROR] runners check failed" >&2
+      fi
     else
       echo "[RESUME] Skipping runners check (already completed)"
     fi
@@ -1126,16 +1153,22 @@ main() {
 
   log_section "Scanning postinstall hooks"
   if ! should_skip_step "hooks"; then
-    scan_hooks "$SCAN_MODE" "${ROOTS[@]}"
-    save_checkpoint "hooks"
+    if scan_hooks "$SCAN_MODE" "${ROOTS[@]}"; then
+      save_checkpoint "hooks"
+    else
+      echo "[ERROR] hooks scan failed" >&2
+    fi
   else
     echo "[RESUME] Skipping hooks scan (already completed)"
   fi
 
   log_section "Hash-based malware detection"
   if ! should_skip_step "hashes"; then
-    scan_hashes "$SCAN_MODE" "${ROOTS[@]}"
-    save_checkpoint "hashes"
+    if scan_hashes "$SCAN_MODE" "${ROOTS[@]}"; then
+      save_checkpoint "hashes"
+    else
+      echo "[ERROR] hash detection failed" >&2
+    fi
   else
     echo "[RESUME] Skipping hash detection (already completed)"
   fi
@@ -1143,8 +1176,11 @@ main() {
   if [[ "$SCAN_MODE" == "full" ]]; then
     log_section "Checking for migration suffix attack"
     if ! should_skip_step "migration"; then
-      scan_migration_suffix "${ROOTS[@]}"
-      save_checkpoint "migration"
+      if scan_migration_suffix "${ROOTS[@]}"; then
+        save_checkpoint "migration"
+      else
+        echo "[ERROR] migration check failed" >&2
+      fi
     else
       echo "[RESUME] Skipping migration check (already completed)"
     fi
@@ -1154,8 +1190,11 @@ main() {
 
   log_section "Checking for TruffleHog installation"
   if ! should_skip_step "trufflehog"; then
-    scan_trufflehog "$SCAN_MODE" "${ROOTS[@]}"
-    save_checkpoint "trufflehog"
+    if scan_trufflehog "$SCAN_MODE" "${ROOTS[@]}"; then
+      save_checkpoint "trufflehog"
+    else
+      echo "[ERROR] TruffleHog check failed" >&2
+    fi
   else
     echo "[RESUME] Skipping TruffleHog check (already completed)"
   fi
@@ -1163,14 +1202,20 @@ main() {
   if [[ "$SCAN_MODE" == "full" ]]; then
     log_section "Scanning for suspicious env+exfil patterns"
     if ! should_skip_step "env_patterns"; then
-      scan_env_patterns "${ROOTS[@]}"
-      save_checkpoint "env_patterns"
+      if scan_env_patterns "${ROOTS[@]}"; then
+        save_checkpoint "env_patterns"
+      else
+        echo "[ERROR] env patterns scan failed" >&2
+      fi
     else
       echo "[RESUME] Skipping env patterns scan (already completed)"
     fi
   else
     echo "[Quick] Skipping env+exfil pattern scan (use --mode full)"
   fi
+
+  # Mark scan as complete
+  save_checkpoint "scan_complete"
 
   local end_ts
   end_ts=$(date +%s)

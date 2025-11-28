@@ -1,8 +1,82 @@
-# Shai-Hulud Detection Scanner
+# Shai-Hulud Scanner & Guard
 
-A cross-platform security scanner for detecting the **Shai-Hulud** npm supply chain malware. Available for both Windows (PowerShell) and Unix/Linux/macOS (Bash).
+🛡️ Supply chain malware detection and protection system for npm packages.
 
-## Background
+[![Release](https://img.shields.io/github/v/release/idoxcloud/Shai-Hulud-Scanner?include_prereleases)](https://github.com/idoxcloud/Shai-Hulud-Scanner/releases)
+[![License](https://img.shields.io/github/license/idoxcloud/Shai-Hulud-Scanner)](LICENSE)
+
+## Features
+
+- **🔍 Shai-Hulud Scanner**: Detect compromised npm packages with quick and full scan modes
+- **🛡️ Shai-Hulud Guard**: Install/uninstall npm registry protection system
+- **☁️ S3 Scanning**: Scan S3 buckets for compromised packages
+- **💻 Cross-platform**: Linux, macOS (Intel & ARM), Windows support
+- **🔒 Backup Protection**: Never overwrites original hosts file
+- **🎯 Enhanced UX**: Native Go flags, intuitive command syntax
+- **⚡ Performance**: Bash 3.2+ and Bash 4+ compatibility
+- **📁 Clean Reports**: Scan reports written to temp directory by default
+
+## Quick Start
+
+### Installation
+
+Download the binary for your platform:
+
+```bash
+# macOS (Apple Silicon)
+curl -L https://github.com/idoxcloud/Shai-Hulud-Scanner/releases/download/v0.1-alpha.1/shai-hulud-guard-darwin-arm64 -o shai-hulud-guard
+chmod +x shai-hulud-guard
+sudo mv shai-hulud-guard /usr/local/bin/
+
+# macOS (Intel)
+curl -L https://github.com/idoxcloud/Shai-Hulud-Scanner/releases/download/v0.1-alpha.1/shai-hulud-guard-darwin-amd64 -o shai-hulud-guard
+chmod +x shai-hulud-guard
+sudo mv shai-hulud-guard /usr/local/bin/
+
+# Linux (AMD64)
+curl -L https://github.com/idoxcloud/Shai-Hulud-Scanner/releases/download/v0.1-alpha.1/shai-hulud-guard-linux-amd64 -o shai-hulud-guard
+chmod +x shai-hulud-guard
+sudo mv shai-hulud-guard /usr/local/bin/
+
+# Linux (ARM64)
+curl -L https://github.com/idoxcloud/Shai-Hulud-Scanner/releases/download/v0.1-alpha.1/shai-hulud-guard-linux-arm64 -o shai-hulud-guard
+chmod +x shai-hulud-guard
+sudo mv shai-hulud-guard /usr/local/bin/
+```
+
+### Usage
+
+```bash
+# Scan your system (quick scan)
+shai-hulud-guard -scan
+
+# Full comprehensive scan
+shai-hulud-guard -scan -mode full
+
+# Scan specific directory
+shai-hulud-guard -scan -root /path/to/dir -mode full
+
+# Install protection
+sudo shai-hulud-guard -install
+
+# Check status
+sudo shai-hulud-guard -status
+
+# Show help
+shai-hulud-guard -h
+```
+
+## Documentation
+
+- **[Guard Documentation](docs/README-GUARD.md)** - Detailed guide for Shai-Hulud Guard protection system
+- **[Certificate Setup](docs/CERTIFICATE_SETUP.md)** - Instructions for certificate management
+- **[Scanner Scripts](scripts/README.md)** - Information about standalone scanner scripts
+
+---
+
+## Scanner Technical Details
+
+### Background
 
 Shai-Hulud is a sophisticated supply chain attack targeting npm packages that was first discovered in September 2025, with a more advanced variant (Shai-Hulud 2.0) appearing in November 2025. The malware compromises npm packages to:
 
@@ -13,7 +87,7 @@ Shai-Hulud is a sophisticated supply chain attack targeting npm packages that wa
 
 This scanner detects indicators of compromise (IOCs) from both variants.
 
-## Features
+### Scanner Features and Modes
 
 The scanner performs the following checks:
 
@@ -32,7 +106,7 @@ The scanner performs the following checks:
 | TruffleHog detection | PATH only | Yes | Detects credential harvesting tool |
 | Env+exfil pattern scan | No | Yes | Finds code combining env access with exfiltration |
 
-## Requirements
+### Requirements for Standalone Scripts
 
 ### PowerShell (Windows)
 - Windows PowerShell 5.1 or later
@@ -55,69 +129,21 @@ The scanner performs the following checks:
 - Run `./s3-bucket-scanner.sh -h` for usage
 - Requires `Check-ShaiHulud-Dynamic.sh` to be present in the same folder
 
-## Installation
+### Standalone Script Installation
 
 Clone or download the repository to your system:
 
 ```bash
-git clone https://github.com/your-repo/shai-hulud-scanner.git
+git clone https://github.com/idoxcloud/Shai-Hulud-Scanner.git
 cd shai-hulud-scanner
 ```
 
-### Option 1: Use the Go Binary (Recommended)
-
-Build the cross-platform binary that includes embedded scanner scripts:
-
-```bash
-# Build the binary
-make build
-
-# Or manually:
-go build -o shai-hulud-guard ./cmd/shai-hulud-guard
-```
-
-The binary includes all scanner scripts embedded, so you only need to distribute one file!
-
-### Option 2: Use Scripts Directly
-
-Or download the individual script for your platform from the `scripts/` directory:
+Download the individual script for your platform from the `scripts/` directory:
 - **Windows**: `scripts/Check-ShaiHulud-Dynamic.ps1`
 - **Unix/Linux**: `scripts/Check-ShaiHulud-Dynamic.sh`
 - **macOS**: `scripts/Check-ShaiHulud-Dynamic-macOS.sh`
 
-## Usage
-
-### Go Binary (Cross-Platform)
-
-The `shai-hulud-guard` binary includes both protection features and the scanner:
-
-```bash
-# Scan with embedded scanner (no admin required)
-./shai-hulud-guard --scan                    # Quick scan of $HOME
-./shai-hulud-guard --scan -- -m full         # Full comprehensive scan
-./shai-hulud-guard --scan -- -r /path/to/dir # Scan specific directory
-./shai-hulud-guard --scan -- -h              # Show scanner options
-
-# Protection features (require sudo/admin)
-sudo ./shai-hulud-guard --install            # Install npm protection
-sudo ./shai-hulud-guard --status             # Check protection status
-sudo ./shai-hulud-guard --uninstall          # Remove protection
-```
-
-**Note:** Use `--` to separate the binary's flags from scanner script arguments.
-
-#### Scanner Arguments (passed after `--`)
-
-All arguments after `--` are passed to the embedded scanner script:
-
-| Argument | Description |
-|----------|-------------|
-| `-r, --roots "path"` | Comma-separated directories to scan |
-| `-m, --mode quick\|full` | Scan mode (default: quick) |
-| `-o, --report FILE` | Report output path |
-| `-h, --help` | Show scanner help |
-
-### PowerShell (Windows)
+### Standalone Script Usage
 
 ```powershell
 # Allow script execution (session-only)
@@ -175,7 +201,7 @@ chmod +x scripts/Check-ShaiHulud-Dynamic-macOS.sh
 | `-o, --report` | `./ShaiHulud-Scan-Report.txt` | Output file for detailed report |
 | `-h, --help` | - | Show usage help |
 
-## Scan Modes
+### Scan Modes
 
 **Quick Mode** (~10-30 seconds)
 - Scans top-level `node_modules` only (depth-limited)
@@ -191,7 +217,7 @@ chmod +x scripts/Check-ShaiHulud-Dynamic-macOS.sh
 - Self-hosted runner detection
 - Environment variable exfiltration pattern detection
 
-## Detected IOCs
+### Detected IOCs
 
 ### Malicious Files
 - `shai-hulud.js`, `shai_hulud.js`
@@ -223,7 +249,7 @@ chmod +x scripts/Check-ShaiHulud-Dynamic-macOS.sh
 - `d60ec97eea19fffb4809bc35b91033b52490ca11` - bun_environment.js
 - `3d7570d14d34b0ba137d502f042b27b0f37a59fa` - bun_environment.js variant
 
-## Output
+### Output
 
 The scanner produces:
 
@@ -248,7 +274,7 @@ workflow-content  Workflow contains: self-hosted       C:\Projects\app\.github\w
 malware-hash      SHA256 match: Shai-Hulud bundle.js   C:\Projects\app\dist\bundle.js
 ```
 
-## Performance Optimizations
+### Performance Optimizations
 
 The scanner is optimized for large codebases:
 
@@ -259,7 +285,7 @@ The scanner is optimized for large codebases:
 - **Early termination** - skips redundant checks when matches found
 - **Compiled regex** - single-pass pattern matching for npm cache scan
 
-## Offline Support
+### Offline Support
 
 Both scripts support offline operation:
 
@@ -270,7 +296,7 @@ Both scripts support offline operation:
 3. If the IOC feed is unreachable, the scanner falls back to stale cached data with a warning
 4. File-based IOC checks (hashes, filenames, patterns) work without network access
 
-## Platform Differences
+### Platform Differences
 
 | Feature | PowerShell | Bash |
 |---------|------------|------|
@@ -280,7 +306,7 @@ Both scripts support offline operation:
 | ASCII banner | Yes | Yes |
 | Parallel execution | No | No |
 
-## Limitations
+### Limitations
 
 - **Read-only** - does not delete or modify any files
 - **Network recommended** - fetches live IOC feeds (will continue with local checks if offline)

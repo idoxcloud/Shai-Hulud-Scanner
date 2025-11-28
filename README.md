@@ -49,8 +49,14 @@ curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/ins
 # Check protection status
 curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | bash -s status
 
-# Install to /usr/local/bin
+# Install binary to /usr/local/bin
 curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | sudo bash -s install
+
+# Install guard protection (blocks npm registry)
+curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | sudo bash -s guard-install
+
+# Uninstall guard protection (restore npm access)
+curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | sudo bash -s guard-uninstall
 ```
 
 #### Windows (PowerShell)
@@ -80,8 +86,14 @@ irm https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.ps
 # Check protection status
 & ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.ps1))) -Action status
 
-# Install to Program Files (run PowerShell as Administrator)
+# Install binary to Program Files (run PowerShell as Administrator)
 & ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.ps1))) -Action install
+
+# Install guard protection (blocks npm registry, run as Administrator)
+& ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.ps1))) -Action guard-install
+
+# Uninstall guard protection (restore npm access, run as Administrator)
+& ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.ps1))) -Action guard-uninstall
 ```
 
 ### Manual Installation

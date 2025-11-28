@@ -21,28 +21,58 @@
 
 ## Quick Start
 
-### Installation
+### One-Shot Installer (Recommended)
+
+Run a security report without installation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | bash
+```
+
+Or install permanently:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | sudo bash -s install
+```
+
+Available one-shot commands:
+
+```bash
+# Run security report (default)
+curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | bash
+
+# Run scan only
+curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | bash -s scan
+
+# Check protection status
+curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | bash -s status
+
+# Install to /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | sudo bash -s install
+```
+
+### Manual Installation
 
 Download the binary for your platform:
 
 ```bash
 # macOS (Apple Silicon)
-curl -L https://github.com/idoxcloud/Shai-Hulud-Scanner/releases/download/v0.1-alpha.1/shai-hulud-guard-darwin-arm64 -o shai-hulud-guard
+curl -L https://github.com/idoxcloud/Shai-Hulud-Guard/releases/download/v0.1-alpha.2/shai-hulud-guard-darwin-arm64 -o shai-hulud-guard
 chmod +x shai-hulud-guard
 sudo mv shai-hulud-guard /usr/local/bin/
 
 # macOS (Intel)
-curl -L https://github.com/idoxcloud/Shai-Hulud-Scanner/releases/download/v0.1-alpha.1/shai-hulud-guard-darwin-amd64 -o shai-hulud-guard
+curl -L https://github.com/idoxcloud/Shai-Hulud-Guard/releases/download/v0.1-alpha.2/shai-hulud-guard-darwin-amd64 -o shai-hulud-guard
 chmod +x shai-hulud-guard
 sudo mv shai-hulud-guard /usr/local/bin/
 
 # Linux (AMD64)
-curl -L https://github.com/idoxcloud/Shai-Hulud-Scanner/releases/download/v0.1-alpha.1/shai-hulud-guard-linux-amd64 -o shai-hulud-guard
+curl -L https://github.com/idoxcloud/Shai-Hulud-Guard/releases/download/v0.1-alpha.2/shai-hulud-guard-linux-amd64 -o shai-hulud-guard
 chmod +x shai-hulud-guard
 sudo mv shai-hulud-guard /usr/local/bin/
 
 # Linux (ARM64)
-curl -L https://github.com/idoxcloud/Shai-Hulud-Scanner/releases/download/v0.1-alpha.1/shai-hulud-guard-linux-arm64 -o shai-hulud-guard
+curl -L https://github.com/idoxcloud/Shai-Hulud-Guard/releases/download/v0.1-alpha.2/shai-hulud-guard-linux-arm64 -o shai-hulud-guard
 chmod +x shai-hulud-guard
 sudo mv shai-hulud-guard /usr/local/bin/
 ```

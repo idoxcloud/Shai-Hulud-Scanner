@@ -3,7 +3,7 @@
 
 param(
     [string]$Action = "report",
-    [string]$Version = "v0.1-alpha.2",
+    [string]$Version = "v0.1-alpha.3",
     [string]$InstallDir = "$env:ProgramFiles\Shai-Hulud-Guard"
 )
 

@@ -23,6 +23,8 @@
 
 ### One-Shot Installer (Recommended)
 
+#### macOS / Linux
+
 Run a security report without installation:
 
 ```bash
@@ -49,6 +51,37 @@ curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/ins
 
 # Install to /usr/local/bin
 curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | sudo bash -s install
+```
+
+#### Windows (PowerShell)
+
+Run a security report without installation:
+
+```powershell
+irm https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.ps1 | iex
+```
+
+Or install permanently (requires Administrator):
+
+```powershell
+# Run PowerShell as Administrator, then:
+& ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.ps1))) -Action install
+```
+
+Available one-shot commands:
+
+```powershell
+# Run security report (default)
+irm https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.ps1 | iex
+
+# Run scan only
+& ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.ps1))) -Action scan
+
+# Check protection status
+& ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.ps1))) -Action status
+
+# Install to Program Files (run PowerShell as Administrator)
+& ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.ps1))) -Action install
 ```
 
 ### Manual Installation

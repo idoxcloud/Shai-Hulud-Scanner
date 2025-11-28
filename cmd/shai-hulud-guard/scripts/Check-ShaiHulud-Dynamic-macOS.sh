@@ -128,7 +128,7 @@ usage() {
 Usage: Check-ShaiHulud-Dynamic-macOS.sh [options]
   -r, --roots "path1,path2"   Comma-separated root paths to scan (default: $HOME)
   -m, --mode  quick|full      Scan mode (default: quick)
-  -o, --report FILE           Report output path (default: ./ShaiHulud-Scan-Report.txt)
+  -o, --report FILE           Report output path (default: /tmp/ShaiHulud-Scan-Report-<mode>-<timestamp>.txt)
   -h, --help                  Show this help
 EOF
 }
@@ -151,7 +151,7 @@ fi
 # Set default report path with timestamp and scan mode if not specified
 if [[ -z "$REPORT_PATH" ]]; then
   TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-  REPORT_PATH="./ShaiHulud-Scan-Report-${SCAN_MODE}-${TIMESTAMP}.txt"
+  REPORT_PATH="${TMPDIR:-/tmp}/ShaiHulud-Scan-Report-${SCAN_MODE}-${TIMESTAMP}.txt"
 fi
 
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

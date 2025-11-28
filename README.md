@@ -52,11 +52,11 @@ curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/ins
 # Install binary to /usr/local/bin
 curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | sudo bash -s install
 
-# Install guard protection (blocks npm registry)
-curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | sudo bash -s guard-install
+# Install guard protection (blocks npm registry, requires sudo)
+curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | sudo bash -s -- guard-install
 
-# Uninstall guard protection (restore npm access)
-curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | sudo bash -s guard-uninstall
+# Uninstall guard protection (restore npm access, requires sudo)
+curl -fsSL https://raw.githubusercontent.com/idoxcloud/Shai-Hulud-Guard/main/install.sh | sudo bash -s -- guard-uninstall
 ```
 
 #### Windows (PowerShell)

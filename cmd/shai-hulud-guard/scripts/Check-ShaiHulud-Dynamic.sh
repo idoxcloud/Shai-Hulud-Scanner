@@ -551,15 +551,18 @@ scan_runners() {
 scan_hooks() {
   local mode="$1"; shift
   local roots=("$@")
-  echo "[*] Analyzing package.json files for suspicious postinstall hooks..."
+  echo "[*] Analyzing package.json files for suspicious npm lifecycle hooks..."
+  echo "[*] Checking: preinstall, postinstall, install, prepare hooks"
   for root in "${roots[@]}"; do
     [[ -d "$root" ]] || continue
     if [[ "$mode" == "quick" ]]; then
       local pkg="$root/package.json"
       [[ -f "$pkg" ]] || continue
-      while IFS='|' read -r hook pat; do
+      while IFS='|' read -r hook pat content; do
         [[ -z "$hook" ]] && continue
         add_finding "postinstall-hook" "Suspicious $hook: $pat" "$pkg"
+        echo "    [!] FOUND: Suspicious $hook in $(basename "$(dirname "$pkg")")"
+        printf '    Hook content: %s\n' "$content"
       done <<<"$(python3 - "$pkg" "${SUSPICIOUS_HOOK_PATTERNS[@]}" 2>/dev/null <<'PY'
 import json, sys
 pkg = sys.argv[1]
@@ -575,15 +578,17 @@ for hook in ("postinstall","preinstall","install","prepare"):
         continue
     for pat in pats:
         if pat in val:
-            print(f"{hook}|{pat}")
+            print(f"{hook}|{pat}|{val}")
             sys.exit(0)
 PY
 )"
     else
       while IFS= read -r -d '' pkg; do
-        while IFS='|' read -r hook pat; do
+        while IFS='|' read -r hook pat content; do
           [[ -z "$hook" ]] && continue
           add_finding "postinstall-hook" "Suspicious $hook: $pat" "$pkg"
+          echo "    [!] FOUND: Suspicious $hook in $(basename "$(dirname "$pkg")")"
+          printf '    Hook content: %s\n' "$content"
         done <<<"$(python3 - "$pkg" "${SUSPICIOUS_HOOK_PATTERNS[@]}" 2>/dev/null <<'PY'
 import json, sys, pathlib
 pkg = pathlib.Path(sys.argv[1])
@@ -599,7 +604,7 @@ for hook in ("postinstall","preinstall","install","prepare"):
         continue
     for pat in pats:
         if pat in val:
-            print(f"{hook}|{pat}")
+            print(f"{hook}|{pat}|{val}")
             sys.exit(0)
 PY
 )"
@@ -778,7 +783,7 @@ main() {
       echo "[Quick] Skipping self-hosted runner scan (use --mode full)"
     fi
 
-    log_section "Scanning postinstall hooks"
+    log_section "Scanning npm lifecycle hooks"
     scan_hooks "$SCAN_MODE" "${ROOTS[@]}"
 
     log_section "Hash-based malware detection"

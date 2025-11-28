@@ -174,6 +174,32 @@ main() {
             echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s install"
             ;;
             
+        guard-install)
+            info "Installing Shai-Hulud Guard protection..."
+            if ! check_root; then
+                error "Guard installation requires root privileges"
+                echo ""
+                echo "Please run with sudo:"
+                echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s guard-install"
+                exit 1
+            fi
+            echo ""
+            "$tmp_binary" -install
+            ;;
+            
+        guard-uninstall)
+            info "Uninstalling Shai-Hulud Guard protection..."
+            if ! check_root; then
+                error "Guard uninstallation requires root privileges"
+                echo ""
+                echo "Please run with sudo:"
+                echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s guard-uninstall"
+                exit 1
+            fi
+            echo ""
+            "$tmp_binary" -uninstall
+            ;;
+            
         status)
             info "Checking protection status..."
             echo ""
@@ -184,10 +210,12 @@ main() {
             error "Unknown action: $action"
             echo ""
             echo "Usage:"
-            echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash              # Run report"
-            echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash -s scan      # Run scan"
-            echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash -s status    # Check status"
-            echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s install  # Install permanently"
+            echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash                       # Run report"
+            echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash -s scan               # Run scan"
+            echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash -s status             # Check status"
+            echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s install       # Install binary"
+            echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s guard-install # Install guard protection"
+            echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s guard-uninstall # Uninstall guard protection"
             exit 1
             ;;
     esac

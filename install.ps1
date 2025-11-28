@@ -145,6 +145,32 @@ function Main {
                 Write-Host '  irm https://raw.githubusercontent.com/' + $REPO + '/main/install.ps1 | iex' -ForegroundColor Cyan
             }
             
+            "guard-install" {
+                Write-Info "Installing Shai-Hulud Guard protection..."
+                if (-not (Test-Administrator)) {
+                    Write-ErrorMsg "Guard installation requires administrator privileges"
+                    Write-Host ""
+                    Write-Host "Please run PowerShell as Administrator and try again:"
+                    Write-Host '  & ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/' + $REPO + '/main/install.ps1))) -Action guard-install' -ForegroundColor Cyan
+                    exit 1
+                }
+                Write-Host ""
+                & $tmpBinary -install
+            }
+            
+            "guard-uninstall" {
+                Write-Info "Uninstalling Shai-Hulud Guard protection..."
+                if (-not (Test-Administrator)) {
+                    Write-ErrorMsg "Guard uninstallation requires administrator privileges"
+                    Write-Host ""
+                    Write-Host "Please run PowerShell as Administrator and try again:"
+                    Write-Host '  & ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/' + $REPO + '/main/install.ps1))) -Action guard-uninstall' -ForegroundColor Cyan
+                    exit 1
+                }
+                Write-Host ""
+                & $tmpBinary -uninstall
+            }
+            
             "status" {
                 Write-Info "Checking protection status..."
                 Write-Host ""
@@ -164,8 +190,14 @@ function Main {
                 Write-Host "  # Check status"
                 Write-Host '  & ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/' + $REPO + '/main/install.ps1))) -Action status' -ForegroundColor Cyan
                 Write-Host ""
-                Write-Host "  # Install permanently (run as Administrator)"
+                Write-Host "  # Install binary (run as Administrator)"
                 Write-Host '  & ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/' + $REPO + '/main/install.ps1))) -Action install' -ForegroundColor Cyan
+                Write-Host ""
+                Write-Host "  # Install guard protection (run as Administrator)"
+                Write-Host '  & ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/' + $REPO + '/main/install.ps1))) -Action guard-install' -ForegroundColor Cyan
+                Write-Host ""
+                Write-Host "  # Uninstall guard protection (run as Administrator)"
+                Write-Host '  & ([ScriptBlock]::Create((irm https://raw.githubusercontent.com/' + $REPO + '/main/install.ps1))) -Action guard-uninstall' -ForegroundColor Cyan
                 exit 1
             }
         }

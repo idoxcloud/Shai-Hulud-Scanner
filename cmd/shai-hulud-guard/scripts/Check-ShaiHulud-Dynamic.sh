@@ -586,13 +586,26 @@ for hook in ("postinstall","preinstall","install","prepare"):
 PY
 )"
     else
-      while IFS= read -r -d '' pkg; do
-        while IFS='|' read -r hook pat content; do
-          [[ -z "$hook" ]] && continue
-          add_finding "postinstall-hook" "Suspicious $hook: $pat" "$pkg"
-          echo "    [!] FOUND: Suspicious $hook in $(basename "$(dirname "$pkg")")"
-          printf '    Hook content: %s\n' "$content"
-        done <<<"$(python3 - "$pkg" "${SUSPICIOUS_HOOK_PATTERNS[@]}" 2>/dev/null <<'PY'
+      # Parallel processing for full mode
+      local num_cores
+      num_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
+      local parallel_jobs=$((num_cores * 2))
+      
+      local tmpfile_list="$(mktemp)"
+      local tmpfile_results="$(mktemp)"
+      find "$root" -type f -name "package.json" ! -path "*/node_modules/*/node_modules/*" -print0 2>/dev/null > "$tmpfile_list" || true
+      local total_files=$(grep -c -z '' < "$tmpfile_list" 2>/dev/null || echo 0)
+      echo "[*] Found $total_files package.json files to scan (using $parallel_jobs workers)"
+      
+      # Export patterns for worker function
+      export SUSPICIOUS_HOOK_PATTERNS_STR="${SUSPICIOUS_HOOK_PATTERNS[*]}"
+      
+      # Parallel scan using xargs
+      xargs -0 -P "$parallel_jobs" -I {} bash -c '
+        pkg="$1"
+        shift
+        patterns=("$@")
+        python3 - "$pkg" "${patterns[@]}" 2>/dev/null <<"PY"
 import json, sys, pathlib
 pkg = pathlib.Path(sys.argv[1])
 pats = sys.argv[2:]
@@ -607,10 +620,21 @@ for hook in ("postinstall","preinstall","install","prepare"):
         continue
     for pat in pats:
         if pat in val:
-            print(f"{hook}|{pat}|{val}")
+            print(f"{hook}|{pat}|{val}|{pkg}")
             sys.exit(0)
 PY
-)"
+      ' _ {} ${SUSPICIOUS_HOOK_PATTERNS[@]} < "$tmpfile_list" >> "$tmpfile_results"
+      
+      # Process results
+      while IFS='|' read -r hook pat content pkg; do
+        [[ -z "$hook" ]] && continue
+        add_finding "postinstall-hook" "Suspicious $hook: $pat" "$pkg"
+        echo "    [!] FOUND: Suspicious $hook in $(basename "$(dirname "$pkg")")"
+        printf '    Hook content: %s\n' "$content"
+      done < "$tmpfile_results"
+      
+      rm -f "$tmpfile_list" "$tmpfile_results"
+      unset SUSPICIOUS_HOOK_PATTERNS_STR
       done < <(find "$root" -type f -name "package.json" ! -path "*/node_modules/*/node_modules/*" -print0 2>/dev/null)
     fi
   done
@@ -722,21 +746,50 @@ scan_trufflehog() {
   fi
 }
 
-scan_env_patterns() {
-  local roots=("$@")
+# Worker function for env pattern checking
+check_env_patterns() {
+  local file="$1"
   local env_regex='process\.env|os\.environ|\$env:|AWS_ACCESS_KEY|AWS_SECRET|GITHUB_TOKEN|NPM_TOKEN|GH_TOKEN|AZURE_'
   local exfil_regex='webhook\.site|bb8ca5f6-4175-45d2-b042-fc9ebb8170b7|exfiltrat|fetch\s*\(|axios\.|http\.request|https\.request'
+  
+  local content
+  content="$(cat "$file" 2>/dev/null || true)"
+  [[ -z "$content" ]] && return 0
+  
+  if echo "$content" | grep -Eiq "$env_regex" && echo "$content" | grep -Eiq "$exfil_regex"; then
+    echo "env-exfil-pattern|Env access + exfil pattern|$file"
+  fi
+}
+
+export -f check_env_patterns
+
+scan_env_patterns() {
+  local roots=("$@")
+  local num_cores
+  num_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
+  local parallel_jobs=$((num_cores * 2))
+  
+  echo "[*] Scanning for env+exfil patterns (using $parallel_jobs workers)"
+  
+  local tmpfile_results="$(mktemp)"
+  
   for root in "${roots[@]}"; do
     [[ -d "$root" ]] || continue
-    while IFS= read -r -d '' file; do
-      content="$(cat "$file" 2>/dev/null || true)"
-      [[ -z "$content" ]] && continue
-      if echo "$content" | grep -Eiq "$env_regex" && echo "$content" | grep -Eiq "$exfil_regex"; then
-        add_finding "env-exfil-pattern" "Env access + exfil pattern" "$file"
-        echo "    [!] SUSPICIOUS env+exfil: $file"
-      fi
-    done < <(find "$root" \( -path "*/node_modules/*" -o -name "*.d.ts" \) -prune -false -o -type f \( -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.sh" -o -name "*.ps1" \) -print0 2>/dev/null)
+    find "$root" \( -path "*/node_modules/*" -o -name "*.d.ts" \) -prune -false -o -type f \( -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.sh" -o -name "*.ps1" \) -print0 2>/dev/null | \
+      xargs -0 -P "$parallel_jobs" -I {} bash -c 'check_env_patterns "$@"' _ {} >> "$tmpfile_results"
   done
+  
+  # Process results
+  local count=0
+  while IFS='|' read -r type desc location; do
+    [[ -z "$type" ]] && continue
+    ((count++))
+    add_finding "$type" "$desc" "$location"
+    echo "    [!] SUSPICIOUS env+exfil: $location"
+  done < "$tmpfile_results"
+  
+  rm -f "$tmpfile_results"
+  echo "[*] Env+exfil pattern scan complete (found $count issues)"
 }
 
 main() {

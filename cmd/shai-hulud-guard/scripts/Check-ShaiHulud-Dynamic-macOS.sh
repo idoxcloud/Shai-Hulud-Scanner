@@ -818,26 +818,26 @@ PY
 )"
       fi
     else
-      # Count total package.json files first for progress tracking
-      local tmpfile_count="$(mktemp)"
-      find "$root" -type f -name "package.json" ! -path "*/node_modules/*/node_modules/*" -print0 2>/dev/null > "$tmpfile_count" || true
-      local total_files=$(grep -c -z '' < "$tmpfile_count" 2>/dev/null || echo 0)
-      echo "[*] Found $total_files package.json files to scan"
+      # Parallel processing for full mode
+      local num_cores
+      num_cores=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
+      local parallel_jobs=$((num_cores * 2))
       
-      local count=0
-      while IFS= read -r -d '' pkg; do
-        ((count++))
-        ((total_checked++))
-        if (( count % 10 == 0 )) || [[ $count -eq 1 ]]; then
-          echo -ne "\r[*] Progress: $count/$total_files files checked..." >&2
-        fi
-        while IFS='|' read -r hook pat content; do
-          [[ -z "$hook" ]] && continue
-          echo -ne "\r" >&2
-          add_finding "postinstall-hook" "Suspicious $hook: $pat" "$pkg"
-          echo "    [!] FOUND: Suspicious $hook in $(basename "$(dirname "$pkg")")"
-          printf '    Hook content: %s\n' "$content"
-        done <<<"$(python3 - "$pkg" "${SUSPICIOUS_HOOK_PATTERNS[@]}" 2>/dev/null <<'PY'
+      local tmpfile_list="$(mktemp)"
+      local tmpfile_results="$(mktemp)"
+      find "$root" -type f -name "package.json" ! -path "*/node_modules/*/node_modules/*" -print0 2>/dev/null > "$tmpfile_list" || true
+      local total_files=$(grep -c -z '' < "$tmpfile_list" 2>/dev/null || echo 0)
+      echo "[*] Found $total_files package.json files to scan (using $parallel_jobs workers)"
+      
+      # Export patterns for worker function
+      export SUSPICIOUS_HOOK_PATTERNS_STR="${SUSPICIOUS_HOOK_PATTERNS[*]}"
+      
+      # Parallel scan using xargs
+      xargs -0 -P "$parallel_jobs" -I {} bash -c '
+        pkg="$1"
+        shift
+        patterns=("$@")
+        python3 - "$pkg" "${patterns[@]}" 2>/dev/null <<"PY"
 import json, sys, pathlib
 pkg = pathlib.Path(sys.argv[1])
 pats = sys.argv[2:]
@@ -852,13 +852,22 @@ for hook in ("postinstall","preinstall","install","prepare"):
         continue
     for pat in pats:
         if pat in val:
-            print(f"{hook}|{pat}|{val}")
+            print(f"{hook}|{pat}|{val}|{pkg}")
             sys.exit(0)
 PY
-)"
-      done < "$tmpfile_count"
-      rm -f "$tmpfile_count"
-      echo -ne "\r" >&2
+      ' _ {} ${SUSPICIOUS_HOOK_PATTERNS[@]} < "$tmpfile_list" >> "$tmpfile_results"
+      
+      # Process results
+      while IFS='|' read -r hook pat content pkg; do
+        [[ -z "$hook" ]] && continue
+        ((total_checked++))
+        add_finding "postinstall-hook" "Suspicious $hook: $pat" "$pkg"
+        echo "    [!] FOUND: Suspicious $hook in $(basename "$(dirname "$pkg")")"
+        printf '    Hook content: %s\n' "$content"
+      done < "$tmpfile_results"
+      
+      rm -f "$tmpfile_list" "$tmpfile_results"
+      unset SUSPICIOUS_HOOK_PATTERNS_STR
     fi
   done
   echo "[*] Checked $total_checked package.json files for suspicious hooks"
@@ -976,66 +985,86 @@ scan_trufflehog() {
   fi
 }
 
-scan_env_patterns() {
-  local roots=("$@")
-  # Known Shai-Hulud IOCs (CRITICAL)
+# Worker function for env pattern checking
+check_env_patterns() {
+  local file="$1"
   local known_iocs='webhook\.site|bb8ca5f6-4175-45d2-b042-fc9ebb8170b7'
-  # Sensitive env vars (HIGH if combined with exfil)
   local sensitive_env='AWS_ACCESS_KEY|AWS_SECRET|GITHUB_TOKEN|NPM_TOKEN|GH_TOKEN|AZURE_'
-  # Generic env access (LOW if combined with generic exfil)
   local generic_env='process\.env|os\.environ|\$env:'
-  # Generic exfil patterns
   local exfil_funcs='fetch\s*\(|axios\.|http\.request|https\.request'
   local exfil_keywords='exfiltrat'
   
-  local tmpfile="$(mktemp)" || { echo "[ERROR] Failed to create temp file" >&2; return 1; }
-  local scanned=0
+  local content
+  content="$(cat "$file" 2>/dev/null || true)"
+  [[ -z "$content" ]] && return 0
+  
+  # CRITICAL: Known Shai-Hulud IOCs
+  if echo "$content" | grep -Eiq "$known_iocs"; then
+    echo "malware-ioc|CRITICAL: Known Shai-Hulud IOC detected|$file"
+    return 0
+  fi
+  
+  # HIGH: Sensitive credentials + exfil patterns
+  if echo "$content" | grep -Eiq "$sensitive_env"; then
+    if echo "$content" | grep -Eiq "$exfil_funcs|$exfil_keywords"; then
+      echo "credential-exfil|HIGH: Sensitive credential access + exfil pattern|$file"
+      return 0
+    fi
+  fi
+  
+  # LOW: Generic env access + generic fetch
+  if echo "$content" | grep -Eiq "$generic_env" && echo "$content" | grep -Eiq "$exfil_funcs"; then
+    echo "env-access-low|LOW: Generic env access + network call (likely benign)|$file"
+  fi
+}
+
+export -f check_env_patterns
+
+scan_env_patterns() {
+  local roots=("$@")
+  local num_cores
+  num_cores=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
+  local parallel_jobs=$((num_cores * 2))
+  
+  echo "[*] Scanning for env+exfil patterns (using $parallel_jobs workers)"
+  
+  local tmpfile_list="$(mktemp)" || { echo "[ERROR] Failed to create temp file" >&2; return 1; }
+  local tmpfile_results="$(mktemp)"
   local critical_count=0
   local high_count=0
   local low_count=0
   
   for root in "${roots[@]}"; do
     [[ -d "$root" ]] || continue
-    find "$root" \( -path "*/node_modules/*" -o -name "*.d.ts" \) -prune -false -o -type f \( -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.sh" -o -name "*.ps1" \) -print0 2>/dev/null > "$tmpfile" || true
-    while IFS= read -r -d '' file; do
-      ((scanned++))
-      if (( scanned % 100 == 0 )); then
-        echo -ne "\r[*] Scanned $scanned files..." >&2
-      fi
-      content="$(cat "$file" 2>/dev/null || true)"
-      [[ -z "$content" ]] && continue
-      
-      # CRITICAL: Known Shai-Hulud IOCs
-      if echo "$content" | grep -Eiq "$known_iocs"; then
-        echo -ne "\r" >&2
-        add_finding "malware-ioc" "CRITICAL: Known Shai-Hulud IOC detected" "$file"
-        echo "    [!!!] CRITICAL: Shai-Hulud IOC found: $file"
-        ((critical_count++))
-        continue
-      fi
-      
-      # HIGH: Sensitive credentials + exfil patterns
-      if echo "$content" | grep -Eiq "$sensitive_env"; then
-        if echo "$content" | grep -Eiq "$exfil_funcs|$exfil_keywords"; then
-          echo -ne "\r" >&2
-          add_finding "credential-exfil" "HIGH: Sensitive credential access + exfil pattern" "$file"
-          echo "    [!!] HIGH: Credential exfil pattern: $file"
-          ((high_count++))
-          continue
-        fi
-      fi
-      
-      # LOW: Generic env access + generic fetch (not alarming by default, just logged)
-      # This is common in legitimate code, so we don't print warnings
-      if echo "$content" | grep -Eiq "$generic_env" && echo "$content" | grep -Eiq "$exfil_funcs"; then
-        add_finding "env-access-low" "LOW: Generic env access + network call (likely benign)" "$file"
-        ((low_count++))
-      fi
-    done < "$tmpfile"
+    find "$root" \( -path "*/node_modules/*" -o -name "*.d.ts" \) -prune -false -o -type f \( -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.sh" -o -name "*.ps1" \) -print0 2>/dev/null | \
+      xargs -0 -P "$parallel_jobs" -I {} bash -c 'check_env_patterns "$@"' _ {} >> "$tmpfile_results"
   done
-  rm -f "$tmpfile"
-  echo -ne "\r" >&2
-  echo "[*] Scanned $scanned code files for suspicious patterns"
+  
+  # Process results
+  local scanned=0
+  while IFS='|' read -r type desc location; do
+    [[ -z "$type" ]] && continue
+    ((scanned++))
+    add_finding "$type" "$desc" "$location"
+    
+    case "$type" in
+      malware-ioc)
+        echo "    [!!!] CRITICAL: Shai-Hulud IOC found: $location"
+        ((critical_count++))
+        ;;
+      credential-exfil)
+        echo "    [!!] HIGH: Credential exfil pattern: $location"
+        ((high_count++))
+        ;;
+      env-access-low)
+        ((low_count++))
+        ;;
+    esac
+  done < "$tmpfile_results"
+  
+  rm -f "$tmpfile_list" "$tmpfile_results"
+  
+  echo "[*] Scanned code files for suspicious patterns (found $scanned issues)"
   if [[ $critical_count -gt 0 ]]; then
     echo "    [!!!] CRITICAL: $critical_count file(s) with known Shai-Hulud IOCs"
   fi

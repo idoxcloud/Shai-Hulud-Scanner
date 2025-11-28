@@ -8,7 +8,7 @@ SCAN_ERROR=0
 trap 'SCAN_ERROR=1' ERR
 
 ROOTS=("$HOME")
-SCAN_MODE="quick"
+SCAN_MODE="full"
 REPORT_PATH="/tmp/ShaiHulud-Scan-Report-$(date +%Y%m%d-%H%M%S).txt"
 
 DO_BANNER=Y
@@ -312,11 +312,13 @@ find_node_modules() {
   for root in "$@"; do
     [[ -d "$root" ]] || { echo "[!] Root path not found: $root" >&2; continue; }
     if [[ "$mode" == "quick" ]]; then
-      [[ -d "$root/node_modules" ]] && dirs+=("$root/node_modules")
-      for sub in "$root"/*; do
-        [[ -d "$sub" && -d "$sub/node_modules" ]] && dirs+=("$sub/node_modules")
-      done
+      # Quick mode: Use find but limit depth to improve performance
+      # Search common project directories with reasonable depth
+      while IFS= read -r -d '' d; do 
+        dirs+=("$d")
+      done < <(find "$root" -maxdepth 5 -type d -name node_modules -print0 2>/dev/null)
     else
+      # Full mode: Deep recursive search with no depth limit
       while IFS= read -r -d '' d; do dirs+=("$d"); done < <(find "$root" -type d -name node_modules -print0 2>/dev/null)
     fi
   done

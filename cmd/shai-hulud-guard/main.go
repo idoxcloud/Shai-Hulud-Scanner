@@ -93,7 +93,7 @@ func main() {
 		backupInfo = flag.Bool("backup-info", false, "Show location of hosts file backup")
 		
 		// Scan-specific flags
-		scanMode      = flag.String("mode", "quick", "Scan mode: quick or full (use with -scan)")
+		scanMode      = flag.String("mode", "full", "Scan mode: quick or full (use with -scan)")
 		scanRoot      = flag.String("root", "", "Root directory to scan (use with -scan, default: $HOME)")
 		scanOutput    = flag.String("output", "", "Output report file path (use with -scan)")
 		scanNoCache   = flag.Bool("no-cache", false, "Disable caching (use with -scan)")
@@ -240,7 +240,12 @@ func main() {
 
 	// Handle report command - generates comprehensive report
 	if *report {
-		if err := generateReport(*scanMode, *scanRoot); err != nil {
+		// Use full scan mode for reports unless explicitly specified
+		reportMode := *scanMode
+		if reportMode == "quick" && !isFlagSet("mode") {
+			reportMode = "full"
+		}
+		if err := generateReport(reportMode, *scanRoot); err != nil {
 			fmt.Fprintf(os.Stderr, "Report generation failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -439,6 +444,17 @@ func printStatus(label string, status bool) {
 		icon = "✓"
 	}
 	fmt.Printf("  %s %s\n", icon, label)
+}
+
+// isFlagSet checks if a command-line flag was explicitly set
+func isFlagSet(name string) bool {
+	found := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
 }
 
 // promptConfirm asks the user for confirmation (default: no)

@@ -29,6 +29,7 @@ func customUsage() {
 	fmt.Fprintf(os.Stderr, "  -report               Generate comprehensive system security report (scan + status)\n")
 	fmt.Fprintf(os.Stderr, "  -scan                 Scan for Shai-Hulud indicators\n")
 	fmt.Fprintf(os.Stderr, "  -scan-s3              Scan S3 bucket for Shai-Hulud indicators\n")
+	fmt.Fprintf(os.Stderr, "  -clear-cache          Clear scan cache and checkpoints\n")
 	fmt.Fprintf(os.Stderr, "  -version              Show version information\n")
 	fmt.Fprintf(os.Stderr, "  -backup-info          Show location of hosts file backup\n")
 	
@@ -86,6 +87,7 @@ func main() {
 		scanS3     = flag.Bool("scan-s3", false, "Scan S3 bucket for Shai-Hulud indicators (requires mc and jq)")
 		status     = flag.Bool("status", false, "Check protection status")
 		report     = flag.Bool("report", false, "Generate comprehensive report (scan + status)")
+		clearCache = flag.Bool("clear-cache", false, "Clear scan cache and checkpoints")
 		version    = flag.Bool("version", false, "Show version")
 		confirm    = flag.Bool("yes", false, "Skip dry-run and apply changes immediately (default: false)")
 		backupInfo = flag.Bool("backup-info", false, "Show location of hosts file backup")
@@ -126,6 +128,28 @@ func main() {
 		} else {
 			fmt.Println("Status: Backup exists")
 		}
+		os.Exit(0)
+	}
+
+	// Handle clear-cache command - doesn't require admin privileges
+	if *clearCache {
+		cacheDir := filepath.Join(os.TempDir(), "shai-hulud-scanner-cache")
+		
+		// Check if cache directory exists
+		if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
+			fmt.Println("No cache found.")
+			os.Exit(0)
+		}
+		
+		// Remove cache directory
+		fmt.Printf("Clearing scan cache: %s\n", cacheDir)
+		if err := os.RemoveAll(cacheDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to clear cache: %v\n", err)
+			os.Exit(1)
+		}
+		
+		fmt.Println("✓ Cache cleared successfully")
+		fmt.Println("  Next scan will rebuild cache from scratch")
 		os.Exit(0)
 	}
 
